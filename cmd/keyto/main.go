@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 
 	"github.com/hemfrid/keyto-hub-cli/internal/auth"
@@ -16,6 +17,7 @@ import (
 	"github.com/hemfrid/keyto-hub-cli/internal/gitwire"
 	"github.com/hemfrid/keyto-hub-cli/internal/hub"
 	"github.com/hemfrid/keyto-hub-cli/internal/project"
+	"github.com/hemfrid/keyto-hub-cli/internal/shellinit"
 	"github.com/hemfrid/keyto-hub-cli/internal/start"
 	"github.com/hemfrid/keyto-hub-cli/internal/ui"
 )
@@ -58,8 +60,12 @@ func dispatch(args []string) error {
 	case "auth":
 		return runAuth()
 	case "start":
-		ui.Banner(os.Stdout, ui.IsStdoutTTY(), ui.TermWidth(), false, version)
+		// Banner + all interactive output go to stderr so stdout stays clean
+		// for shell integration (which captures the resolved project dir).
+		ui.Banner(os.Stderr, ui.IsStderrTTY(), ui.TermWidth(), false, version)
 		return runStart(context.Background(), args[1:])
+	case "shell-init":
+		return runShellInit(args[1:])
 	case "credential":
 		return runCredential(args)
 	default:
@@ -127,10 +133,50 @@ func runStart(ctx context.Context, args []string) error {
 		WriteMarker: project.Write,
 		Cwd:         cwd,
 		In:          os.Stdin,
-		Out:         os.Stdout,
+		Out:         os.Stderr,
 	}
 
-	return start.Run(ctx, projectArg, d)
+	projectDir, err := start.Run(ctx, projectArg, d)
+	if err != nil {
+		return err
+	}
+	emitProjectDir(projectDir)
+	return nil
+}
+
+// emitProjectDir reports the resolved project directory after `keyto start`.
+// Under shell integration (KEYTO_SHELL_INTEGRATION=1, exported by the wrapper
+// function) it prints ONLY the directory to stdout so the wrapper can cd into
+// it — every other message went to stderr. Without integration it prints a
+// copy-pasteable cd + next-step hint to stderr and leaves stdout clean.
+func emitProjectDir(dir string) {
+	if dir == "" {
+		return
+	}
+	if os.Getenv("KEYTO_SHELL_INTEGRATION") == "1" {
+		fmt.Println(dir) // stdout: the cd target for the shell wrapper
+		fmt.Fprintln(os.Stderr, "\nStart your AI session:  claude")
+		return
+	}
+	fmt.Fprintf(os.Stderr, "\nNext:\n  cd %s\n  claude        # start your AI dev session\n", dir)
+}
+
+// runShellInit prints the shell-integration wrapper function. With no argument
+// it picks the wrapper for $SHELL (falling back to a POSIX function). Source it
+// from your shell rc:  eval "$(keyto shell-init)"
+func runShellInit(args []string) error {
+	shell := ""
+	if len(args) > 0 {
+		shell = args[0]
+	} else if s := os.Getenv("SHELL"); s != "" {
+		shell = filepath.Base(s)
+	}
+	script, err := shellinit.Script(shell)
+	if err != nil {
+		return err
+	}
+	fmt.Print(script)
+	return nil
 }
 
 // cloneArgs builds the `git clone` argument list, injecting the keyto credential
@@ -213,6 +259,7 @@ func printUsage() {
 	fmt.Println("Commands:")
 	fmt.Println("  auth        Authenticate with the Keyto Hub")
 	fmt.Println("  start       Clone and wire a Keyto project")
+	fmt.Println("  shell-init  Print the shell integration snippet (eval \"$(keyto shell-init)\")")
 	fmt.Println("  credential  Git credential helper")
 	fmt.Println("  help        Show this help message")
 }

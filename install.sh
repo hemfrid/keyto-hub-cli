@@ -102,4 +102,37 @@ case ":${PATH}:" in
   *":${dir}:"*) : ;;
   *) info "NOTE: ${dir} is not on your PATH. Add it, e.g.:  export PATH=\"${dir}:\$PATH\"" ;;
 esac
+
+# --- shell integration (true `cd` after `keyto start`) ----------------
+# Adds a thin `keyto` wrapper function to the user's shell rc so that
+# `keyto start` can cd the calling shell into the cloned project (a child
+# process cannot change its parent shell's directory). Idempotent: a marker
+# line guards against duplicate entries on re-install.
+install_shell_integration() {
+  marker="# >>> keyto shell integration >>>"
+  shell_name="$(basename "${SHELL:-}")"
+  case "$shell_name" in
+    zsh)  rc="${ZDOTDIR:-$HOME}/.zshrc" ;;
+    bash) rc="${HOME}/.bashrc" ;;
+    fish) rc="${HOME}/.config/fish/config.fish" ;;
+    *)    rc="" ;;
+  esac
+  if [ -z "$rc" ]; then
+    info "NOTE: shell integration not auto-installed for '$shell_name'. Add manually:  eval \"\$(keyto shell-init)\""
+    return
+  fi
+  if [ -f "$rc" ] && grep -qF "$marker" "$rc" 2>/dev/null; then
+    info "Shell integration already present in $rc"
+    return
+  fi
+  mkdir -p "$(dirname "$rc")"
+  {
+    printf '\n%s\n' "$marker"
+    printf 'eval "$(keyto shell-init)"\n'
+    printf '%s\n' "# <<< keyto shell integration <<<"
+  } >> "$rc"
+  info "Added shell integration to $rc — restart your shell or run:  source $rc"
+}
+install_shell_integration
+
 info "Next: run  keyto auth"
