@@ -57,7 +57,10 @@ type session struct {
 	in *bufio.Reader
 }
 
-// Run implements `keyto start [project]`.
+// Run implements `keyto start [project]`. On success it returns the resolved
+// project directory (the clone dir, or the cwd when re-wiring in place) so the
+// caller can cd into it under shell integration. The returned dir is empty when
+// no project was resolved (e.g. an empty project list).
 //
 // Resolution order:
 //  1. If Creds is nil → error asking the user to run `keyto auth`.
@@ -67,9 +70,9 @@ type session struct {
 //  3. If projectArg is empty:
 //     - cwd has a marker → prompt "Work in <name>? [Y/n]"; yes → re-wire; no → picker.
 //     - otherwise → picker (numbered list from List); empty list → message and return.
-func Run(ctx context.Context, projectArg string, d Deps) error {
+func Run(ctx context.Context, projectArg string, d Deps) (string, error) {
 	if d.Creds == nil {
-		return fmt.Errorf("not authenticated — run `keyto auth`")
+		return "", fmt.Errorf("not authenticated — run `keyto auth`")
 	}
 
 	s := &session{Deps: d, in: bufio.NewReader(d.In)}
@@ -80,46 +83,46 @@ func Run(ctx context.Context, projectArg string, d Deps) error {
 }
 
 // runWithArg handles the case where the user specified a project name explicitly.
-func (s *session) runWithArg(ctx context.Context, name string) error {
+func (s *session) runWithArg(ctx context.Context, name string) (string, error) {
 	// Check if cwd is already that project.
 	m, err := s.ReadMarker(s.Cwd)
 	if err != nil {
-		return fmt.Errorf("read project marker: %w", err)
+		return "", fmt.Errorf("read project marker: %w", err)
 	}
 	if m != nil && m.Name == name {
 		// Re-wire in place.
 		if err := s.Wire(s.Cwd, m, s.Creds.UserEmail, s.Creds.UserName); err != nil {
-			return err
+			return "", err
 		}
 		fmt.Fprintln(s.Out, "ready")
-		return nil
+		return s.Cwd, nil
 	}
 
 	// Fetch project list and find the named project.
 	projects, err := s.List(ctx)
 	if err != nil {
-		return err
+		return "", err
 	}
 	proj, found := findProject(projects, name)
 	if !found {
-		return fmt.Errorf("project %q not found or you are not a member", name)
+		return "", fmt.Errorf("project %q not found or you are not a member", name)
 	}
 
 	// Prompt for checkout directory.
 	dir, err := s.promptDir(proj.Name)
 	if err != nil {
-		return err
+		return "", err
 	}
 
 	return s.cloneAndWire(proj, dir)
 }
 
 // runInteractive handles the case where no project name was given.
-func (s *session) runInteractive(ctx context.Context) error {
+func (s *session) runInteractive(ctx context.Context) (string, error) {
 	// Check if cwd has a marker.
 	m, err := s.ReadMarker(s.Cwd)
 	if err != nil {
-		return fmt.Errorf("read project marker: %w", err)
+		return "", fmt.Errorf("read project marker: %w", err)
 	}
 
 	if m != nil {
@@ -127,15 +130,15 @@ func (s *session) runInteractive(ctx context.Context) error {
 		fmt.Fprintf(s.Out, "Work in %s? [Y/n] ", m.Name)
 		answer, err := s.readLine()
 		if err != nil && err != io.EOF {
-			return fmt.Errorf("read input: %w", err)
+			return "", fmt.Errorf("read input: %w", err)
 		}
 		answer = strings.TrimSpace(strings.ToLower(answer))
 		if answer == "" || answer == "y" || answer == "yes" {
 			if err := s.Wire(s.Cwd, m, s.Creds.UserEmail, s.Creds.UserName); err != nil {
-				return err
+				return "", err
 			}
 			fmt.Fprintln(s.Out, "ready")
-			return nil
+			return s.Cwd, nil
 		}
 		// Fall through to picker.
 	}
@@ -144,14 +147,14 @@ func (s *session) runInteractive(ctx context.Context) error {
 }
 
 // runPicker shows a numbered list of projects and lets the user pick one.
-func (s *session) runPicker(ctx context.Context) error {
+func (s *session) runPicker(ctx context.Context) (string, error) {
 	projects, err := s.List(ctx)
 	if err != nil {
-		return err
+		return "", err
 	}
 	if len(projects) == 0 {
 		fmt.Fprintln(s.Out, "No projects found. Ask a project owner to add you as a member.")
-		return nil
+		return "", nil
 	}
 
 	fmt.Fprintln(s.Out, "Your projects:")
@@ -162,30 +165,31 @@ func (s *session) runPicker(ctx context.Context) error {
 
 	line, err := s.readLine()
 	if err != nil && err != io.EOF {
-		return fmt.Errorf("read input: %w", err)
+		return "", fmt.Errorf("read input: %w", err)
 	}
 	line = strings.TrimSpace(line)
 
 	idx, err := strconv.Atoi(line)
 	if err != nil || idx < 1 || idx > len(projects) {
-		return fmt.Errorf("invalid selection %q: enter a number between 1 and %d", line, len(projects))
+		return "", fmt.Errorf("invalid selection %q: enter a number between 1 and %d", line, len(projects))
 	}
 	proj := projects[idx-1]
 
 	dir, err := s.promptDir(proj.Name)
 	if err != nil {
-		return err
+		return "", err
 	}
 
 	return s.cloneAndWire(proj, dir)
 }
 
-// cloneAndWire clones proj into dir, writes the marker, and wires git.
-func (s *session) cloneAndWire(proj hub.Project, dir string) error {
+// cloneAndWire clones proj into dir, writes the marker, and wires git. It
+// returns the checkout directory on success.
+func (s *session) cloneAndWire(proj hub.Project, dir string) (string, error) {
 	repoURL := remoteURL(proj, s.Creds.HubURL)
 
 	if err := s.Clone(repoURL, dir); err != nil {
-		return fmt.Errorf("clone %s: %w", repoURL, err)
+		return "", fmt.Errorf("clone %s: %w", repoURL, err)
 	}
 
 	m := &project.Marker{
@@ -195,14 +199,14 @@ func (s *session) cloneAndWire(proj hub.Project, dir string) error {
 		HubURL: s.Creds.HubURL,
 	}
 	if err := s.WriteMarker(dir, m); err != nil {
-		return fmt.Errorf("write project marker: %w", err)
+		return "", fmt.Errorf("write project marker: %w", err)
 	}
 
 	if err := s.Wire(dir, m, s.Creds.UserEmail, s.Creds.UserName); err != nil {
-		return err
+		return "", err
 	}
 	fmt.Fprintf(s.Out, "Cloned %s into %s\n", proj.Name, dir)
-	return nil
+	return dir, nil
 }
 
 // remoteURL builds the Hub git proxy URL for a project.

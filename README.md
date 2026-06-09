@@ -38,6 +38,18 @@ already inside a Keyto project and offers to resume it.
 By default the CLI targets the production Hub (`https://hub.keytolabs.com`).
 Override with `KEYTO_HUB_URL` (e.g. to test against UAT).
 
+### Shell integration (cd into the project)
+
+The installer adds a small `keyto` shell function to your rc so that
+`keyto start` drops your shell straight into the cloned project — a plain
+binary can't change its parent shell's directory, so the function does the
+`cd` for it. Without integration, `keyto start` prints the `cd` command for you
+to run. To add it manually (or in a new shell), source the snippet:
+
+```sh
+eval "$(keyto shell-init)"   # add to ~/.zshrc / ~/.bashrc; fish supported too
+```
+
 ## Build from source
 
 ```sh

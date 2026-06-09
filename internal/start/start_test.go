@@ -63,7 +63,7 @@ func TestRun_NilCreds_ReturnsAuthError(t *testing.T) {
 		Out:         &bytes.Buffer{},
 	}
 
-	err := start.Run(context.Background(), "", d)
+	_, err := start.Run(context.Background(), "", d)
 	if err == nil {
 		t.Fatal("expected error for nil creds, got nil")
 	}
@@ -101,7 +101,7 @@ func TestRun_ProjectArg_CwdMarkerMatches_RewiresInPlace(t *testing.T) {
 		Out:         &bytes.Buffer{},
 	}
 
-	err := start.Run(context.Background(), "acme-web", d)
+	_, err := start.Run(context.Background(), "acme-web", d)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -142,7 +142,7 @@ func TestRun_ProjectArg_NotInCwd_ClonesWithCorrectURL(t *testing.T) {
 		Out: &bytes.Buffer{},
 	}
 
-	err := start.Run(context.Background(), "acme-web", d)
+	_, err := start.Run(context.Background(), "acme-web", d)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -179,7 +179,7 @@ func TestRun_ProjectArg_CustomDir_UsedForClone(t *testing.T) {
 		Out:         &bytes.Buffer{},
 	}
 
-	err := start.Run(context.Background(), "acme-web", d)
+	_, err := start.Run(context.Background(), "acme-web", d)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -204,7 +204,7 @@ func TestRun_ProjectArg_NotMember_Error(t *testing.T) {
 		Out:         &bytes.Buffer{},
 	}
 
-	err := start.Run(context.Background(), "nonexistent-project", d)
+	_, err := start.Run(context.Background(), "nonexistent-project", d)
 	if err == nil {
 		t.Fatal("expected error when project not found, got nil")
 	}
@@ -239,7 +239,7 @@ func TestRun_NoArg_CwdMarker_PromptYes_RewiresInPlace(t *testing.T) {
 		Out:         &bytes.Buffer{},
 	}
 
-	err := start.Run(context.Background(), "", d)
+	_, err := start.Run(context.Background(), "", d)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -274,7 +274,7 @@ func TestRun_NoArg_CwdMarker_PromptNo_FallsToPicker(t *testing.T) {
 		Out: &bytes.Buffer{},
 	}
 
-	err := start.Run(context.Background(), "", d)
+	_, err := start.Run(context.Background(), "", d)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -303,7 +303,7 @@ func TestRun_NoArg_NoCwdMarker_Picker_ClonesSelected(t *testing.T) {
 		Out: &bytes.Buffer{},
 	}
 
-	err := start.Run(context.Background(), "", d)
+	_, err := start.Run(context.Background(), "", d)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -331,7 +331,7 @@ func TestRun_NoArg_EmptyList_GracefulMessage(t *testing.T) {
 		Out:         &out,
 	}
 
-	err := start.Run(context.Background(), "", d)
+	_, err := start.Run(context.Background(), "", d)
 	if err != nil {
 		t.Fatalf("unexpected error for empty list: %v", err)
 	}
@@ -361,7 +361,7 @@ func TestRun_ListError_Propagated(t *testing.T) {
 		Out:         &bytes.Buffer{},
 	}
 
-	err := start.Run(context.Background(), "", d)
+	_, err := start.Run(context.Background(), "", d)
 	if err == nil {
 		t.Fatal("expected error from List, got nil")
 	}
@@ -394,11 +394,87 @@ func TestRun_WireError_Propagated(t *testing.T) {
 		Out:         &bytes.Buffer{},
 	}
 
-	err := start.Run(context.Background(), "acme-web", d)
+	_, err := start.Run(context.Background(), "acme-web", d)
 	if err == nil {
 		t.Fatal("expected error from Wire, got nil")
 	}
 	if !errors.Is(err, wireErr) {
 		t.Errorf("expected error to wrap wireErr, got: %v", err)
+	}
+}
+
+// T12: the clone path returns the checkout directory (used by shell integration
+// to cd the calling shell into the project).
+func TestRun_ClonePath_ReturnsCheckoutDir(t *testing.T) {
+	d := start.Deps{
+		Creds:       makeCreds(),
+		List:        fakeList(twoProjects()),
+		Clone:       noopClone,
+		Wire:        noopWire,
+		ReadMarker:  fakeReadMarker(nil),
+		WriteMarker: noopWriteMarker,
+		Cwd:         "/tmp/cwd",
+		In:          strings.NewReader("\n"), // accept default checkout dir
+		Out:         &bytes.Buffer{},
+	}
+
+	dir, err := start.Run(context.Background(), "acme-web", d)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if dir != "/tmp/cwd/acme-web" {
+		t.Errorf("returned dir = %q, want /tmp/cwd/acme-web", dir)
+	}
+}
+
+// T13: re-wiring in place returns cwd (integration cd's to the current project).
+func TestRun_RewireInPlace_ReturnsCwd(t *testing.T) {
+	cwdMarker := &project.Marker{
+		Name:   "acme-web",
+		Org:    "hemfrid",
+		Repo:   "acme-web",
+		HubURL: "https://hub.example.com",
+	}
+	d := start.Deps{
+		Creds:       makeCreds(),
+		List:        fakeList(twoProjects()),
+		Clone:       noopClone,
+		Wire:        noopWire,
+		ReadMarker:  fakeReadMarker(cwdMarker),
+		WriteMarker: noopWriteMarker,
+		Cwd:         "/tmp/acme-web",
+		In:          strings.NewReader(""),
+		Out:         &bytes.Buffer{},
+	}
+
+	dir, err := start.Run(context.Background(), "acme-web", d)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if dir != "/tmp/acme-web" {
+		t.Errorf("returned dir = %q, want /tmp/acme-web", dir)
+	}
+}
+
+// T14: an empty project list resolves no project → empty dir, no error.
+func TestRun_EmptyList_ReturnsEmptyDir(t *testing.T) {
+	d := start.Deps{
+		Creds:       makeCreds(),
+		List:        fakeList([]hub.Project{}),
+		Clone:       noopClone,
+		Wire:        noopWire,
+		ReadMarker:  fakeReadMarker(nil),
+		WriteMarker: noopWriteMarker,
+		Cwd:         "/tmp/cwd",
+		In:          strings.NewReader(""),
+		Out:         &bytes.Buffer{},
+	}
+
+	dir, err := start.Run(context.Background(), "", d)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if dir != "" {
+		t.Errorf("returned dir = %q, want empty", dir)
 	}
 }
