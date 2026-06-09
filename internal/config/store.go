@@ -36,6 +36,13 @@ func dir() string {
 	return filepath.Join(home, ".keyto")
 }
 
+// Dir returns the keyto config directory (honours KEYTO_HOME, else ~/.keyto).
+// Exported so sibling packages can store non-secret state (e.g. the
+// update-check cache) alongside the credential store.
+func Dir() string {
+	return dir()
+}
+
 // credPath returns the full path to the credentials file.
 func credPath() string {
 	return filepath.Join(dir(), "credentials")

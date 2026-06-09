@@ -66,3 +66,7 @@ go build -o keyto ./cmd/keyto
 - `git push` → the credential helper supplies the credential → the Hub authorizes
   you live against project membership → relays to GitHub as the App. Revoking your
   access at the Hub cuts pushes immediately.
+
+`keyto auth` / `keyto start` also check (at most once a day, cached in
+`~/.keyto/`) whether a newer release exists and print an update hint if so. The
+check is fail-silent and never runs in non-interactive sessions.

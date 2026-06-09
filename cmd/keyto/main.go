@@ -17,6 +17,7 @@ import (
 	"github.com/hemfrid/keyto-hub-cli/internal/gitwire"
 	"github.com/hemfrid/keyto-hub-cli/internal/hub"
 	"github.com/hemfrid/keyto-hub-cli/internal/project"
+	"github.com/hemfrid/keyto-hub-cli/internal/selfupdate"
 	"github.com/hemfrid/keyto-hub-cli/internal/shellinit"
 	"github.com/hemfrid/keyto-hub-cli/internal/start"
 	"github.com/hemfrid/keyto-hub-cli/internal/ui"
@@ -58,11 +59,13 @@ func dispatch(args []string) error {
 		printUsage()
 		return nil
 	case "auth":
+		selfupdate.MaybeNotify(version, ui.IsStderrTTY(), os.Stderr)
 		return runAuth()
 	case "start":
 		// Banner + all interactive output go to stderr so stdout stays clean
 		// for shell integration (which captures the resolved project dir).
 		ui.Banner(os.Stderr, ui.IsStderrTTY(), ui.TermWidth(), false, version)
+		selfupdate.MaybeNotify(version, ui.IsStderrTTY(), os.Stderr)
 		return runStart(context.Background(), args[1:])
 	case "shell-init":
 		return runShellInit(args[1:])
