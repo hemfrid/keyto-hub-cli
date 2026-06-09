@@ -15,8 +15,16 @@ type Runner func(dir string, args ...string) error
 // Wire configures a cloned repository to work with the Keyto Hub:
 //
 //  1. Points the "origin" remote at the Hub's git proxy.
-//  2. Configures the `!keyto credential` helper for the Hub's hostname.
+//  2. Makes `!keyto credential` the SOLE credential helper for the Hub host.
 //  3. Sets the committer email and name from the authenticated user's profile.
+//
+// Step 2 first writes an empty helper value, which resets any inherited helpers
+// (e.g. a global `credential.helper osxkeychain`) for the Hub host, then adds
+// the keyto helper. Without the reset, a generic helper runs first and caches
+// the Hub credential — which would mask revocation/rotation at the Hub (the
+// stale cached copy keeps working). This mirrors how `gh` scopes itself to
+// github.com. Using a plain `config` (replace) for the reset followed by
+// `--add` keeps re-wiring idempotent.
 //
 // The first error encountered is returned immediately; subsequent steps are
 // not attempted.
@@ -26,7 +34,8 @@ func Wire(run Runner, dir string, m *project.Marker, email, name string) error {
 
 	steps := [][]string{
 		{"remote", "set-url", "origin", remoteURL},
-		{"config", credKey, "!keyto credential"},
+		{"config", credKey, ""},
+		{"config", "--add", credKey, "!keyto credential"},
 		{"config", "user.email", email},
 		{"config", "user.name", name},
 	}
