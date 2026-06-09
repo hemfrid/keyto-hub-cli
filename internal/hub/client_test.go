@@ -113,3 +113,67 @@ func TestExchangeToken_ContextCancellation(t *testing.T) {
 		t.Fatal("ExchangeToken() expected error on cancelled context, got nil")
 	}
 }
+
+func TestListProjects_Success(t *testing.T) {
+	want := []hub.Project{
+		{Name: "acme-web", Org: "hemfrid", Repo: "acme-web", Role: "owner"},
+		{Name: "beta-api", Org: "hemfrid", Repo: "beta-api", Role: "member"},
+	}
+
+	var gotMethod, gotPath, gotAuth string
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod = r.Method
+		gotPath = r.URL.Path
+		gotAuth = r.Header.Get("Authorization")
+
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{"projects": want})
+	}))
+	defer srv.Close()
+
+	c := &hub.Client{BaseURL: srv.URL, Credential: "tok_test123"}
+	got, err := c.ListProjects(context.Background())
+	if err != nil {
+		t.Fatalf("ListProjects() error = %v", err)
+	}
+
+	if gotPath != "/api/cli/projects" {
+		t.Errorf("server received path %q, want /api/cli/projects", gotPath)
+	}
+	if gotMethod != http.MethodGet {
+		t.Errorf("server received method %q, want GET", gotMethod)
+	}
+	if gotAuth != "Bearer tok_test123" {
+		t.Errorf("Authorization header = %q, want Bearer tok_test123", gotAuth)
+	}
+
+	if len(got) != len(want) {
+		t.Fatalf("got %d projects, want %d", len(got), len(want))
+	}
+	for i, p := range want {
+		if got[i].Name != p.Name || got[i].Org != p.Org || got[i].Repo != p.Repo || got[i].Role != p.Role {
+			t.Errorf("projects[%d]: got %+v, want %+v", i, got[i], p)
+		}
+	}
+}
+
+func TestListProjects_Unauthorized_ReturnsError(t *testing.T) {
+	const serverBody = "unauthorized"
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, serverBody, http.StatusUnauthorized)
+	}))
+	defer srv.Close()
+
+	c := &hub.Client{BaseURL: srv.URL}
+	_, err := c.ListProjects(context.Background())
+	if err == nil {
+		t.Fatal("ListProjects() expected error on 401, got nil")
+	}
+
+	// Must not leak the response body verbatim.
+	if strings.Contains(err.Error(), serverBody) {
+		t.Errorf("error message leaks response body: %v", err)
+	}
+}

@@ -6,11 +6,16 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"os/exec"
 
 	"github.com/hemfrid/keyto-cli/internal/auth"
 	"github.com/hemfrid/keyto-cli/internal/browser"
 	"github.com/hemfrid/keyto-cli/internal/config"
 	"github.com/hemfrid/keyto-cli/internal/credential"
+	"github.com/hemfrid/keyto-cli/internal/gitwire"
+	"github.com/hemfrid/keyto-cli/internal/hub"
+	"github.com/hemfrid/keyto-cli/internal/project"
+	"github.com/hemfrid/keyto-cli/internal/start"
 	"github.com/hemfrid/keyto-cli/internal/ui"
 )
 
@@ -49,12 +54,71 @@ func dispatch(args []string) error {
 	case "auth":
 		return runAuth()
 	case "start":
-		return errors.New("not implemented yet")
+		ui.Banner(os.Stdout, ui.IsStdoutTTY(), ui.TermWidth(), false, version)
+		return runStart(context.Background(), args[1:])
 	case "credential":
 		return runCredential(args)
 	default:
 		return fmt.Errorf("unknown command: %s", args[0])
 	}
+}
+
+// runStart implements `keyto start [project]`.
+// It loads creds (nil if not authed — start.Run returns a helpful error in that
+// case), builds the real Deps wrappers, and delegates to start.Run.
+func runStart(ctx context.Context, args []string) error {
+	creds, err := config.Load()
+	if err != nil {
+		if errors.Is(err, config.ErrNotAuthed) {
+			creds = nil // start.Run will return the helpful "run keyto auth" error
+		} else {
+			return fmt.Errorf("start: load config: %w", err)
+		}
+	}
+
+	var hubClient *hub.Client
+	if creds != nil {
+		hubClient = &hub.Client{
+			BaseURL:    creds.HubURL,
+			Credential: creds.Credential,
+		}
+	}
+
+	cwd, err := os.Getwd()
+	if err != nil {
+		return fmt.Errorf("start: get working directory: %w", err)
+	}
+
+	projectArg := ""
+	if len(args) > 0 {
+		projectArg = args[0]
+	}
+
+	d := start.Deps{
+		Creds: creds,
+		List: func(ctx context.Context) ([]hub.Project, error) {
+			if hubClient == nil {
+				return nil, fmt.Errorf("not authenticated")
+			}
+			return hubClient.ListProjects(ctx)
+		},
+		Clone: func(repoURL, dir string) error {
+			cmd := exec.CommandContext(ctx, "git", "clone", repoURL, dir)
+			cmd.Stdout = os.Stdout
+			cmd.Stderr = os.Stderr
+			return cmd.Run()
+		},
+		Wire: func(dir string, m *project.Marker, email, name string) error {
+			return gitwire.Wire(gitwire.RealRunner, dir, m, email, name)
+		},
+		ReadMarker:  project.Read,
+		WriteMarker: project.Write,
+		Cwd:         cwd,
+		In:          os.Stdin,
+		Out:         os.Stdout,
+	}
+
+	return start.Run(ctx, projectArg, d)
 }
 
 // runCredential implements the git credential helper sub-command.
