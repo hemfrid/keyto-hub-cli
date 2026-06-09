@@ -7,24 +7,12 @@ on:
 
 jobs:
   go-test:
-    runs-on: arc-runner
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
-      # arc-runner images are minimal — install Go the same way build.yml
-      # installs the az CLI (in-step, idempotent). Bake Go into the
-      # arc-runner image later to skip this download.
-      - name: Install Go
-        run: |
-          set -euo pipefail
-          GO_VERSION=1.25.1
-          if ! command -v go >/dev/null 2>&1 \
-             || [ "$(go version | awk '{print $3}')" != "go${GO_VERSION}" ]; then
-            curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz" -o /tmp/go.tgz
-            sudo rm -rf /usr/local/go
-            sudo tar -C /usr/local -xzf /tmp/go.tgz
-          fi
-          echo "/usr/local/go/bin" >> "$GITHUB_PATH"
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
 
       - name: gofmt
         run: |
