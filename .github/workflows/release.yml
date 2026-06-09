@@ -2,9 +2,9 @@ name: release
 
 # Tag-triggered release: builds the cross-platform binaries and publishes
 # them (+ sha256 checksums) to a GitHub Release. The one-line installer
-# (S3.1) and `keyto update` (self-update) fetch the asset for the host's
-# GOOS/GOARCH from here. Asset names match Go's runtime.GOOS/GOARCH so the
-# client can compute the name without a manifest.
+# (install.sh / install.ps1) and `keyto update` fetch the asset for the
+# host's GOOS/GOARCH from here. Asset names match Go's runtime.GOOS/GOARCH
+# so the client can compute the name without a manifest.
 on:
   push:
     tags: ['v*']
@@ -14,23 +14,12 @@ permissions:
 
 jobs:
   release:
-    runs-on: arc-runner
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
-      # arc-runner images are minimal — install Go in-step (same idiom as
-      # ci.yml / build.yml's az install). Bake into the image later to skip.
-      - name: Install Go
-        run: |
-          set -euo pipefail
-          GO_VERSION=1.25.1
-          if ! command -v go >/dev/null 2>&1 \
-             || [ "$(go version | awk '{print $3}')" != "go${GO_VERSION}" ]; then
-            curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz" -o /tmp/go.tgz
-            sudo rm -rf /usr/local/go
-            sudo tar -C /usr/local -xzf /tmp/go.tgz
-          fi
-          echo "/usr/local/go/bin" >> "$GITHUB_PATH"
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
 
       - name: Build binaries
         run: |
