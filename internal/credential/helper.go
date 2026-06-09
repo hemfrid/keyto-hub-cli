@@ -2,9 +2,15 @@
 //
 // git invokes this binary with the operation ("get", "store", or "erase") as
 // the first argument and the request attributes on stdin (key=value lines
-// terminated by a blank line).  We answer "get" requests for the Hub host only;
-// all other operations and all non-Hub hosts are silently ignored so we never
-// leak credentials to unrelated helpers in the chain.
+// terminated by a blank line). We answer "get" requests for the Hub host only;
+// all other hosts are silently ignored so we never leak credentials to
+// unrelated helpers in the chain.
+//
+// Friendly re-login (S4.3): git surfaces a credential helper's stderr to the
+// user, so when the stored credential is expired (on "get") or the Hub rejected
+// it (git calls "erase" after a 401 from a revoked/expired credential) we print
+// a clear "run keyto auth" hint instead of letting git fail cryptically or fall
+// back to an interactive Username: prompt.
 package credential
 
 import (
@@ -12,38 +18,60 @@ import (
 	"fmt"
 	"io"
 	"strings"
-	"time"
 
 	"github.com/hemfrid/keyto-hub-cli/internal/config"
+)
+
+const (
+	expiredMsg  = "keyto: your sign-in has expired — run `keyto auth` to sign in again"
+	rejectedMsg = "keyto: the Hub rejected your credential (expired or revoked) — run `keyto auth` to sign in again"
 )
 
 // Helper implements the git credential helper protocol.
 //
 //   - op: the git operation ("get", "store", or "erase").
 //   - in: stdin from git — key=value lines followed by a blank line.
-//   - out: stdout to git — we write the credential lines on a successful "get".
+//   - out: stdout to git — the credential lines on a successful "get".
+//   - errOut: stderr to the user — friendly re-login hints (never secrets).
 //   - creds: the stored Keyto credentials (may be nil if not authenticated).
 //   - hubHost: the hostname of the Hub (e.g. "hub.keytolabs.com").
-func Helper(op string, in io.Reader, out io.Writer, creds *config.Creds, hubHost string) error {
-	// "store" and "erase" are always no-ops: we manage credentials ourselves.
-	if op == "store" || op == "erase" {
+func Helper(
+	op string,
+	in io.Reader,
+	out, errOut io.Writer,
+	creds *config.Creds,
+	hubHost string,
+) error {
+	// "store" is always a no-op: we manage credentials ourselves.
+	if op == "store" {
+		return nil
+	}
+	if op != "get" && op != "erase" {
 		return nil
 	}
 
-	if op != "get" {
-		return nil
-	}
-
-	// Parse the git credential protocol: key=value lines until EOF or blank line.
 	attrs := parseAttrs(in)
 
-	// Only answer for the Hub host.
+	// Only act for the Hub host. When not signed in, hubHost is "" and never
+	// matches a real request host, so we stay silent and defer to the next
+	// helper in git's chain.
 	if attrs["host"] != hubHost {
 		return nil
 	}
 
-	// Require usable credentials.
-	if !usable(creds) {
+	if op == "erase" {
+		// git calls erase after the Hub rejected the credential (a 401 from a
+		// revoked or server-expired credential). Nudge a clean re-login.
+		fmt.Fprintln(errOut, rejectedMsg)
+		return nil
+	}
+
+	// op == "get"
+	if creds == nil || creds.Credential == "" {
+		return nil
+	}
+	if creds.Expired() {
+		fmt.Fprintln(errOut, expiredMsg)
 		return nil
 	}
 
@@ -53,7 +81,7 @@ func Helper(op string, in io.Reader, out io.Writer, creds *config.Creds, hubHost
 }
 
 // parseAttrs reads key=value lines from r until EOF or a blank line and returns
-// the collected attributes as a map.  Lines that do not contain '=' are silently
+// the collected attributes as a map. Lines that do not contain '=' are silently
 // skipped so the helper is tolerant of unexpected git protocol extensions.
 func parseAttrs(r io.Reader) map[string]string {
 	attrs := make(map[string]string)
@@ -71,20 +99,4 @@ func parseAttrs(r io.Reader) map[string]string {
 		attrs[k] = v
 	}
 	return attrs
-}
-
-// usable reports whether creds can be used to authenticate: non-nil, non-empty
-// Credential, and not expired.
-func usable(creds *config.Creds) bool {
-	if creds == nil {
-		return false
-	}
-	if creds.Credential == "" {
-		return false
-	}
-	// A zero ExpiresAt means "no expiry set" — treat as valid.
-	if !creds.ExpiresAt.IsZero() && creds.ExpiresAt.Before(time.Now()) {
-		return false
-	}
-	return true
 }
