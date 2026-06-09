@@ -4,6 +4,8 @@ import (
 	"errors"
 	"fmt"
 	"os"
+
+	"github.com/hemfrid/keyto-cli/internal/ui"
 )
 
 var version = "dev"
@@ -17,12 +19,14 @@ func main() {
 
 func dispatch(args []string) error {
 	if len(args) == 0 {
+		ui.Banner(os.Stdout, ui.IsStdoutTTY(), ui.TermWidth(), false, version)
 		printUsage()
 		return nil
 	}
 
 	switch args[0] {
 	case "help":
+		ui.Banner(os.Stdout, ui.IsStdoutTTY(), ui.TermWidth(), false, version)
 		printUsage()
 		return nil
 	case "auth":
