@@ -11,7 +11,7 @@ import (
 var bannerArt string
 
 const compact = "▌ KEYTO ▐ · local dev"
-const bannerWidth = 95 // approx art width
+const bannerWidth = 50 // approx art width
 
 // Banner writes the startup banner to w, gated on interactivity. Pure +
 // testable: callers pass the TTY/width facts (see tty.go helpers).

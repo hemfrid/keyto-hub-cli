@@ -111,7 +111,11 @@ func runStart(ctx context.Context, args []string) error {
 			return hubClient.ListProjects(ctx)
 		},
 		Clone: func(repoURL, dir string) error {
-			cmd := exec.CommandContext(ctx, "git", "clone", repoURL, dir)
+			hubForClone := ""
+			if creds != nil {
+				hubForClone = creds.HubURL
+			}
+			cmd := exec.CommandContext(ctx, "git", cloneArgs(hubForClone, repoURL, dir)...)
 			cmd.Stdout = os.Stdout
 			cmd.Stderr = os.Stderr
 			return cmd.Run()
@@ -127,6 +131,23 @@ func runStart(ctx context.Context, args []string) error {
 	}
 
 	return start.Run(ctx, projectArg, d)
+}
+
+// cloneArgs builds the `git clone` argument list, injecting the keyto credential
+// helper inline so the clone itself can authenticate to the Hub git proxy.
+//
+// gitwire.Wire configures the helper only repo-locally — which is too late for
+// the clone, since the repository does not exist yet. Without an inline helper,
+// git falls back to its interactive "Username:" prompt. The helper config is
+// scoped to the Hub host (matching Wire), and the helper additionally self-guards
+// by host, so it never answers for unrelated remotes. The "-c" flag and its value
+// must precede the "clone" subcommand.
+func cloneArgs(hubURL, repoURL, dir string) []string {
+	args := []string{}
+	if hubURL != "" {
+		args = append(args, "-c", fmt.Sprintf("credential.%s.helper=!keyto credential", hubURL))
+	}
+	return append(args, "clone", repoURL, dir)
 }
 
 // runCredential implements the git credential helper sub-command.
