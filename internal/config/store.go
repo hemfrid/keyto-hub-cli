@@ -23,6 +23,13 @@ type Creds struct {
 	ExpiresAt  time.Time `json:"expires_at"`
 }
 
+// Expired reports whether the credential has a set expiry that is in the past.
+// A zero ExpiresAt (older creds saved before expiry was tracked) is treated as
+// never-expiring, so it returns false.
+func (c *Creds) Expired() bool {
+	return c != nil && !c.ExpiresAt.IsZero() && c.ExpiresAt.Before(time.Now())
+}
+
 // ErrNotAuthed is returned by Load when no credentials file exists.
 var ErrNotAuthed = errors.New("not authenticated: run 'keyto auth'")
 

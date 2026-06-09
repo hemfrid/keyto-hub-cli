@@ -95,6 +95,12 @@ func runStart(ctx context.Context, args []string) error {
 		}
 	}
 
+	// Friendly re-login (S4.3): a stored-but-expired credential would otherwise
+	// fail mid-flow with a cryptic error. Catch it up front with a clear hint.
+	if creds != nil && creds.Expired() {
+		return fmt.Errorf("your sign-in has expired — run `keyto auth` to sign in again")
+	}
+
 	var hubClient *hub.Client
 	if creds != nil {
 		hubClient = &hub.Client{
@@ -230,7 +236,7 @@ func runCredential(args []string) error {
 		}
 	}
 
-	return credential.Helper(op, os.Stdin, os.Stdout, creds, hubHost)
+	return credential.Helper(op, os.Stdin, os.Stdout, os.Stderr, creds, hubHost)
 }
 
 // runAuth performs the full loopback + PKCE login, persists the credential,

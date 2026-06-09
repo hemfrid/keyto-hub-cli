@@ -2,6 +2,7 @@ package credential_test
 
 import (
 	"bytes"
+	"io"
 	"strings"
 	"testing"
 	"time"
@@ -38,7 +39,7 @@ func TestHelper_Get_MatchingHost_ValidCreds(t *testing.T) {
 	in := gitInput("protocol=https", "host="+hubHost)
 	var out bytes.Buffer
 
-	err := credential.Helper("get", strings.NewReader(in), &out, validCreds(), hubHost)
+	err := credential.Helper("get", strings.NewReader(in), &out, io.Discard, validCreds(), hubHost)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -61,7 +62,7 @@ func TestHelper_Get_DifferentHost(t *testing.T) {
 	in := gitInput("protocol=https", "host=other.example.com")
 	var out bytes.Buffer
 
-	err := credential.Helper("get", strings.NewReader(in), &out, validCreds(), hubHost)
+	err := credential.Helper("get", strings.NewReader(in), &out, io.Discard, validCreds(), hubHost)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -80,7 +81,7 @@ func TestHelper_Get_NilCreds(t *testing.T) {
 	in := gitInput("protocol=https", "host="+hubHost)
 	var out bytes.Buffer
 
-	err := credential.Helper("get", strings.NewReader(in), &out, nil, hubHost)
+	err := credential.Helper("get", strings.NewReader(in), &out, io.Discard, nil, hubHost)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -100,7 +101,7 @@ func TestHelper_Get_ExpiredCreds(t *testing.T) {
 	in := gitInput("protocol=https", "host="+hubHost)
 	var out bytes.Buffer
 
-	err := credential.Helper("get", strings.NewReader(in), &out, expired, hubHost)
+	err := credential.Helper("get", strings.NewReader(in), &out, io.Discard, expired, hubHost)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -119,7 +120,7 @@ func TestHelper_Store(t *testing.T) {
 	in := gitInput("protocol=https", "host="+hubHost, "username=keyto", "password="+testCred)
 	var out bytes.Buffer
 
-	err := credential.Helper("store", strings.NewReader(in), &out, validCreds(), hubHost)
+	err := credential.Helper("store", strings.NewReader(in), &out, io.Discard, validCreds(), hubHost)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -133,7 +134,7 @@ func TestHelper_Erase(t *testing.T) {
 	in := gitInput("protocol=https", "host="+hubHost, "username=keyto", "password="+testCred)
 	var out bytes.Buffer
 
-	err := credential.Helper("erase", strings.NewReader(in), &out, validCreds(), hubHost)
+	err := credential.Helper("erase", strings.NewReader(in), &out, io.Discard, validCreds(), hubHost)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -148,7 +149,7 @@ func TestHelper_Get_ExtraKeys(t *testing.T) {
 	in := "protocol=https\nhost=" + hubHost + "\npath=/some/repo.git\n\n"
 	var out bytes.Buffer
 
-	err := credential.Helper("get", strings.NewReader(in), &out, validCreds(), hubHost)
+	err := credential.Helper("get", strings.NewReader(in), &out, io.Discard, validCreds(), hubHost)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -168,7 +169,7 @@ func TestHelper_Get_NoTrailingBlankLine(t *testing.T) {
 	in := "protocol=https\nhost=" + hubHost
 	var out bytes.Buffer
 
-	err := credential.Helper("get", strings.NewReader(in), &out, validCreds(), hubHost)
+	err := credential.Helper("get", strings.NewReader(in), &out, io.Discard, validCreds(), hubHost)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -189,11 +190,65 @@ func TestHelper_Get_EmptyCredential(t *testing.T) {
 	in := gitInput("protocol=https", "host="+hubHost)
 	var out bytes.Buffer
 
-	err := credential.Helper("get", strings.NewReader(in), &out, empty, hubHost)
+	err := credential.Helper("get", strings.NewReader(in), &out, io.Discard, empty, hubHost)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if out.String() != "" {
 		t.Errorf("expected empty output for empty credential, got: %q", out.String())
+	}
+}
+
+// get + expired creds → friendly re-login hint on errOut, no credential on stdout.
+func TestHelper_Get_ExpiredCreds_PrintsReloginHint(t *testing.T) {
+	expired := &config.Creds{
+		Credential: testCred,
+		HubURL:     "https://hub.keytolabs.com",
+		ExpiresAt:  time.Now().Add(-1 * time.Hour),
+	}
+	in := gitInput("protocol=https", "host="+hubHost)
+	var out, errOut bytes.Buffer
+
+	if err := credential.Helper("get", strings.NewReader(in), &out, &errOut, expired, hubHost); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out.String() != "" {
+		t.Errorf("expired creds must not emit a credential; got stdout: %q", out.String())
+	}
+	if !strings.Contains(errOut.String(), "keyto auth") {
+		t.Errorf("expected a re-login hint mentioning 'keyto auth' on stderr; got: %q", errOut.String())
+	}
+	if strings.Contains(errOut.String(), testCred) {
+		t.Errorf("hint must not leak the credential; got: %q", errOut.String())
+	}
+}
+
+// erase + matching host → friendly re-login hint (git calls erase after the Hub
+// rejects a revoked/expired credential with a 401).
+func TestHelper_Erase_MatchingHost_PrintsReloginHint(t *testing.T) {
+	in := gitInput("protocol=https", "host="+hubHost)
+	var out, errOut bytes.Buffer
+
+	if err := credential.Helper("erase", strings.NewReader(in), &out, &errOut, validCreds(), hubHost); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out.String() != "" {
+		t.Errorf("erase must produce no stdout; got: %q", out.String())
+	}
+	if !strings.Contains(errOut.String(), "keyto auth") {
+		t.Errorf("expected a re-login hint on stderr; got: %q", errOut.String())
+	}
+}
+
+// erase + non-hub host → silent (no hint for unrelated hosts).
+func TestHelper_Erase_DifferentHost_Silent(t *testing.T) {
+	in := gitInput("protocol=https", "host=other.example.com")
+	var out, errOut bytes.Buffer
+
+	if err := credential.Helper("erase", strings.NewReader(in), &out, &errOut, validCreds(), hubHost); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out.String() != "" || errOut.String() != "" {
+		t.Errorf("erase for a non-hub host must be silent; stdout=%q stderr=%q", out.String(), errOut.String())
 	}
 }
