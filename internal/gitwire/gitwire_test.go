@@ -26,7 +26,7 @@ func makeFakeRunner(calls *[]call, failAt int) gitwire.Runner {
 	}
 }
 
-func TestWire_MakesExactly4CallsInOrder(t *testing.T) {
+func TestWire_MakesExactly5CallsInOrder(t *testing.T) {
 	var calls []call
 	runner := makeFakeRunner(&calls, -1) // never fail
 
@@ -42,8 +42,8 @@ func TestWire_MakesExactly4CallsInOrder(t *testing.T) {
 		t.Fatalf("Wire returned unexpected error: %v", err)
 	}
 
-	if len(calls) != 4 {
-		t.Fatalf("expected 4 git calls, got %d: %v", len(calls), calls)
+	if len(calls) != 5 {
+		t.Fatalf("expected 5 git calls, got %d: %v", len(calls), calls)
 	}
 
 	// Call 0: set remote URL
@@ -51,18 +51,23 @@ func TestWire_MakesExactly4CallsInOrder(t *testing.T) {
 		"remote", "set-url", "origin", "https://hub.example.com/git/hemfrid/acme-web.git",
 	})
 
-	// Call 1: credential helper config
+	// Call 1: reset inherited credential helpers for the Hub host (empty value)
 	assertCall(t, calls[1], "/repo", []string{
-		"config", "credential.https://hub.example.com.helper", "!keyto credential",
+		"config", "credential.https://hub.example.com.helper", "",
 	})
 
-	// Call 2: user.email
+	// Call 2: add keyto as the sole credential helper for the Hub host
 	assertCall(t, calls[2], "/repo", []string{
+		"config", "--add", "credential.https://hub.example.com.helper", "!keyto credential",
+	})
+
+	// Call 3: user.email
+	assertCall(t, calls[3], "/repo", []string{
 		"config", "user.email", "alice@example.com",
 	})
 
-	// Call 3: user.name
-	assertCall(t, calls[3], "/repo", []string{
+	// Call 4: user.name
+	assertCall(t, calls[4], "/repo", []string{
 		"config", "user.name", "Alice Example",
 	})
 }
