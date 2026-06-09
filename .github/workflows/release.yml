@@ -1,0 +1,54 @@
+name: release
+
+# Tag-triggered release: builds the cross-platform binaries and publishes
+# them (+ sha256 checksums) to a GitHub Release. The one-line installer
+# (S3.1) and `keyto update` (self-update) fetch the asset for the host's
+# GOOS/GOARCH from here. Asset names match Go's runtime.GOOS/GOARCH so the
+# client can compute the name without a manifest.
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: arc-runner
+    steps:
+      - uses: actions/checkout@v4
+
+      # arc-runner images are minimal — install Go in-step (same idiom as
+      # ci.yml / build.yml's az install). Bake into the image later to skip.
+      - name: Install Go
+        run: |
+          set -euo pipefail
+          GO_VERSION=1.25.1
+          if ! command -v go >/dev/null 2>&1 \
+             || [ "$(go version | awk '{print $3}')" != "go${GO_VERSION}" ]; then
+            curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz" -o /tmp/go.tgz
+            sudo rm -rf /usr/local/go
+            sudo tar -C /usr/local -xzf /tmp/go.tgz
+          fi
+          echo "/usr/local/go/bin" >> "$GITHUB_PATH"
+
+      - name: Build binaries
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME}"   # the tag, e.g. v0.1.0
+          mkdir -p dist
+          for t in darwin/amd64 darwin/arm64 windows/amd64 linux/amd64; do
+            GOOS="${t%/*}"; GOARCH="${t#*/}"
+            ext=""; [ "$GOOS" = "windows" ] && ext=".exe"
+            out="dist/keyto_${GOOS}_${GOARCH}${ext}"
+            GOOS="$GOOS" GOARCH="$GOARCH" \
+              go build -trimpath -ldflags "-s -w -X main.version=${VERSION}" -o "$out" ./cmd/keyto
+          done
+          ( cd dist && sha256sum keyto_* > checksums.txt )
+          ls -l dist
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true
