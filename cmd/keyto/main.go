@@ -4,11 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 
 	"github.com/hemfrid/keyto-cli/internal/auth"
 	"github.com/hemfrid/keyto-cli/internal/browser"
 	"github.com/hemfrid/keyto-cli/internal/config"
+	"github.com/hemfrid/keyto-cli/internal/credential"
 	"github.com/hemfrid/keyto-cli/internal/ui"
 )
 
@@ -49,10 +51,42 @@ func dispatch(args []string) error {
 	case "start":
 		return errors.New("not implemented yet")
 	case "credential":
-		return errors.New("not implemented yet")
+		return runCredential(args)
 	default:
 		return fmt.Errorf("unknown command: %s", args[0])
 	}
+}
+
+// runCredential implements the git credential helper sub-command.
+// git calls: keyto credential <op>  with attributes on stdin.
+// We never print the banner — this path must be stdout-clean for git.
+func runCredential(args []string) error {
+	if len(args) < 2 {
+		return fmt.Errorf("credential: missing operation (get/store/erase)")
+	}
+	op := args[1]
+
+	// Load stored credentials.  ErrNotAuthed is non-fatal: we pass nil so the
+	// helper emits nothing and defers to the next helper in the git chain.
+	creds, err := config.Load()
+	if err != nil {
+		if errors.Is(err, config.ErrNotAuthed) {
+			creds = nil
+		} else {
+			return fmt.Errorf("credential: load config: %w", err)
+		}
+	}
+
+	// Derive the Hub hostname from the stored HubURL.  If we have no creds the
+	// host is "" which never matches any git request host.
+	hubHost := ""
+	if creds != nil && creds.HubURL != "" {
+		if u, err := url.Parse(creds.HubURL); err == nil {
+			hubHost = u.Host
+		}
+	}
+
+	return credential.Helper(op, os.Stdin, os.Stdout, creds, hubHost)
 }
 
 // runAuth performs the full loopback + PKCE login, persists the credential,
