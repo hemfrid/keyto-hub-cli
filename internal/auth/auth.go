@@ -8,7 +8,7 @@ import (
 	"net/url"
 	"time"
 
-	"github.com/hemfrid/keyto-cli/internal/hub"
+	"github.com/hemfrid/keyto-hub-cli/internal/hub"
 )
 
 // Options configures the auth login flow.  All fields with non-nil defaults

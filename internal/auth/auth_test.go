@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/hemfrid/keyto-cli/internal/auth"
-	"github.com/hemfrid/keyto-cli/internal/hub"
+	"github.com/hemfrid/keyto-hub-cli/internal/auth"
+	"github.com/hemfrid/keyto-hub-cli/internal/hub"
 )
 
 // fakeTokenServer returns an httptest.Server that serves a fixed TokenResponse

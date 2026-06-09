@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/hemfrid/keyto-cli/internal/config"
-	"github.com/hemfrid/keyto-cli/internal/credential"
+	"github.com/hemfrid/keyto-hub-cli/internal/config"
+	"github.com/hemfrid/keyto-hub-cli/internal/credential"
 )
 
 const (

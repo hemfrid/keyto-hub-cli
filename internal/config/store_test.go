@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/hemfrid/keyto-cli/internal/config"
+	"github.com/hemfrid/keyto-hub-cli/internal/config"
 )
 
 func TestSaveLoad_RoundTrip(t *testing.T) {

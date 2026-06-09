@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/hemfrid/keyto-cli/internal/hub"
+	"github.com/hemfrid/keyto-hub-cli/internal/hub"
 )
 
 func TestExchangeToken_Success(t *testing.T) {

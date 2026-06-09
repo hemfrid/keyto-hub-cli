@@ -9,15 +9,15 @@ import (
 	"os/exec"
 	"strings"
 
-	"github.com/hemfrid/keyto-cli/internal/auth"
-	"github.com/hemfrid/keyto-cli/internal/browser"
-	"github.com/hemfrid/keyto-cli/internal/config"
-	"github.com/hemfrid/keyto-cli/internal/credential"
-	"github.com/hemfrid/keyto-cli/internal/gitwire"
-	"github.com/hemfrid/keyto-cli/internal/hub"
-	"github.com/hemfrid/keyto-cli/internal/project"
-	"github.com/hemfrid/keyto-cli/internal/start"
-	"github.com/hemfrid/keyto-cli/internal/ui"
+	"github.com/hemfrid/keyto-hub-cli/internal/auth"
+	"github.com/hemfrid/keyto-hub-cli/internal/browser"
+	"github.com/hemfrid/keyto-hub-cli/internal/config"
+	"github.com/hemfrid/keyto-hub-cli/internal/credential"
+	"github.com/hemfrid/keyto-hub-cli/internal/gitwire"
+	"github.com/hemfrid/keyto-hub-cli/internal/hub"
+	"github.com/hemfrid/keyto-hub-cli/internal/project"
+	"github.com/hemfrid/keyto-hub-cli/internal/start"
+	"github.com/hemfrid/keyto-hub-cli/internal/ui"
 )
 
 // defaultHubURL is the production Hub.  Override with KEYTO_HUB_URL.

@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/hemfrid/keyto-cli/internal/project"
+	"github.com/hemfrid/keyto-hub-cli/internal/project"
 )
 
 func TestWriteRead_RoundTrip(t *testing.T) {

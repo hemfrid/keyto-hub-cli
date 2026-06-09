@@ -14,7 +14,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/hemfrid/keyto-cli/internal/config"
+	"github.com/hemfrid/keyto-hub-cli/internal/config"
 )
 
 // Helper implements the git credential helper protocol.

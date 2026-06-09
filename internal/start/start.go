@@ -11,9 +11,9 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/hemfrid/keyto-cli/internal/config"
-	"github.com/hemfrid/keyto-cli/internal/hub"
-	"github.com/hemfrid/keyto-cli/internal/project"
+	"github.com/hemfrid/keyto-hub-cli/internal/config"
+	"github.com/hemfrid/keyto-hub-cli/internal/hub"
+	"github.com/hemfrid/keyto-hub-cli/internal/project"
 )
 
 // Deps holds all injectable dependencies for Run.  Each field is a function or

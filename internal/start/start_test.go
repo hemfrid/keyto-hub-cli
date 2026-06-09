@@ -7,10 +7,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/hemfrid/keyto-cli/internal/config"
-	"github.com/hemfrid/keyto-cli/internal/hub"
-	"github.com/hemfrid/keyto-cli/internal/project"
-	"github.com/hemfrid/keyto-cli/internal/start"
+	"github.com/hemfrid/keyto-hub-cli/internal/config"
+	"github.com/hemfrid/keyto-hub-cli/internal/hub"
+	"github.com/hemfrid/keyto-hub-cli/internal/project"
+	"github.com/hemfrid/keyto-hub-cli/internal/start"
 )
 
 // ---- fake helpers ----

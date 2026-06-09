@@ -4,8 +4,8 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/hemfrid/keyto-cli/internal/gitwire"
-	"github.com/hemfrid/keyto-cli/internal/project"
+	"github.com/hemfrid/keyto-hub-cli/internal/gitwire"
+	"github.com/hemfrid/keyto-hub-cli/internal/project"
 )
 
 type call struct {

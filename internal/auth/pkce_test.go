@@ -5,7 +5,7 @@ import (
 	"encoding/base64"
 	"testing"
 
-	"github.com/hemfrid/keyto-cli/internal/auth"
+	"github.com/hemfrid/keyto-hub-cli/internal/auth"
 )
 
 func TestNewPKCE_Challenge(t *testing.T) {

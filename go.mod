@@ -1,4 +1,4 @@
-module github.com/hemfrid/keyto-cli
+module github.com/hemfrid/keyto-hub-cli
 
 go 1.25.0
 

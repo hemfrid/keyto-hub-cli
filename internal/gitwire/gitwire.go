@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"os/exec"
 
-	"github.com/hemfrid/keyto-cli/internal/project"
+	"github.com/hemfrid/keyto-hub-cli/internal/project"
 )
 
 // Runner is a function that executes a git sub-command in the given directory.
