@@ -50,6 +50,7 @@ func dispatch(args []string) error {
 	if len(args) == 0 {
 		ui.Banner(os.Stdout, ui.IsStdoutTTY(), ui.TermWidth(), false, version)
 		printUsage()
+		selfupdate.MaybeNotify(version, ui.IsStderrTTY(), os.Stderr)
 		return nil
 	}
 
@@ -57,6 +58,7 @@ func dispatch(args []string) error {
 	case "help":
 		ui.Banner(os.Stdout, ui.IsStdoutTTY(), ui.TermWidth(), false, version)
 		printUsage()
+		selfupdate.MaybeNotify(version, ui.IsStderrTTY(), os.Stderr)
 		return nil
 	case "auth":
 		selfupdate.MaybeNotify(version, ui.IsStderrTTY(), os.Stderr)
