@@ -15,9 +15,9 @@ import (
 
 // ---- fake helpers ----
 
-func noopClone(repoURL, dir string) error { return nil }
+func noopClone(repoURL, dir string) error                              { return nil }
 func noopWire(dir string, m *project.Marker, email, name string) error { return nil }
-func noopWriteMarker(dir string, m *project.Marker) error { return nil }
+func noopWriteMarker(dir string, m *project.Marker) error              { return nil }
 
 func fakeList(projects []hub.Project) func(ctx context.Context) ([]hub.Project, error) {
 	return func(ctx context.Context) ([]hub.Project, error) {

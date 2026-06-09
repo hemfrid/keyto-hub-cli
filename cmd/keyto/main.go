@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"strings"
 
 	"github.com/hemfrid/keyto-cli/internal/auth"
 	"github.com/hemfrid/keyto-cli/internal/browser"
@@ -23,11 +24,14 @@ import (
 const defaultHubURL = "https://hub.keytolabs.com"
 
 // hubURL returns the Hub base URL, preferring the KEYTO_HUB_URL env var.
+// Trailing slashes are stripped so a value like "https://hub/" does not produce
+// double-slash paths (e.g. "//git/...").
 func hubURL() string {
-	if u := os.Getenv("KEYTO_HUB_URL"); u != "" {
-		return u
+	u := os.Getenv("KEYTO_HUB_URL")
+	if u == "" {
+		u = defaultHubURL
 	}
-	return defaultHubURL
+	return strings.TrimRight(u, "/")
 }
 
 var version = "dev"
@@ -67,6 +71,10 @@ func dispatch(args []string) error {
 // It loads creds (nil if not authed — start.Run returns a helpful error in that
 // case), builds the real Deps wrappers, and delegates to start.Run.
 func runStart(ctx context.Context, args []string) error {
+	if _, err := exec.LookPath("git"); err != nil {
+		return fmt.Errorf("git is required but was not found on PATH — install git and retry")
+	}
+
 	creds, err := config.Load()
 	if err != nil {
 		if errors.Is(err, config.ErrNotAuthed) {

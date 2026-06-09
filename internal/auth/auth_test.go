@@ -176,6 +176,51 @@ func TestRun_MismatchedState(t *testing.T) {
 	}
 }
 
+// TestRun_OAuthError verifies that Run returns an error (and does NOT call the
+// token endpoint) when the callback arrives with ?error=access_denied and no
+// code — simulating an authorization denial by the user or provider.
+func TestRun_OAuthError(t *testing.T) {
+	tokenCalled := false
+	hubSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/cli/token" {
+			tokenCalled = true
+			w.WriteHeader(http.StatusInternalServerError)
+		}
+	}))
+	defer hubSrv.Close()
+
+	openURL := func(rawURL string) error {
+		u, err := url.Parse(rawURL)
+		if err != nil {
+			return fmt.Errorf("OpenURL: bad URL %q: %w", rawURL, err)
+		}
+		q := u.Query()
+		redirectURI := q.Get("redirect_uri")
+		// Simulate a denial: correct state, error param, no code.
+		callbackURL := redirectURI + "?error=access_denied&state=" + url.QueryEscape(q.Get("state"))
+		resp, err := http.Get(callbackURL) //nolint:noctx
+		if err != nil {
+			return fmt.Errorf("OpenURL: callback GET failed: %w", err)
+		}
+		resp.Body.Close()
+		return nil
+	}
+
+	_, err := auth.Run(context.Background(), auth.Options{
+		HubURL:  hubSrv.URL,
+		OpenURL: openURL,
+		HTTP:    hubSrv.Client(),
+		Timeout: 10 * time.Second,
+	})
+
+	if err == nil {
+		t.Fatal("Run() expected error on OAuth denial, got nil")
+	}
+	if tokenCalled {
+		t.Error("Run() called the token endpoint despite OAuth error — should have aborted")
+	}
+}
+
 // TestRun_Timeout verifies that Run returns an error when OpenURL does nothing
 // (simulating an unresponsive browser) and the Timeout fires.
 func TestRun_Timeout(t *testing.T) {

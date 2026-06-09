@@ -87,6 +87,25 @@ func Run(ctx context.Context, opts Options) (*hub.TokenResponse, error) {
 			return
 		}
 
+		// Handle OAuth error or missing code before attempting token exchange.
+		if oauthErr := q.Get("error"); oauthErr != "" || code == "" {
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			w.WriteHeader(http.StatusBadRequest)
+			fmt.Fprintln(w, `<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"><title>Keyto — authentication failed</title></head>
+<body style="font-family:sans-serif;max-width:480px;margin:4rem auto;text-align:center">
+  <h1>Authentication failed</h1>
+  <p>Authorization was denied or no code was returned. Return to your terminal.</p>
+</body>
+</html>`)
+			select {
+			case errCh <- fmt.Errorf("authorization denied or no code returned: %s", oauthErr):
+			default:
+			}
+			return
+		}
+
 		// Respond with a friendly page; no secrets included.
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		fmt.Fprintln(w, `<!DOCTYPE html>
