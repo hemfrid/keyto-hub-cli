@@ -1,12 +1,27 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
 
+	"github.com/hemfrid/keyto-cli/internal/auth"
+	"github.com/hemfrid/keyto-cli/internal/browser"
+	"github.com/hemfrid/keyto-cli/internal/config"
 	"github.com/hemfrid/keyto-cli/internal/ui"
 )
+
+// defaultHubURL is the production Hub.  Override with KEYTO_HUB_URL.
+const defaultHubURL = "https://hub.keytolabs.com"
+
+// hubURL returns the Hub base URL, preferring the KEYTO_HUB_URL env var.
+func hubURL() string {
+	if u := os.Getenv("KEYTO_HUB_URL"); u != "" {
+		return u
+	}
+	return defaultHubURL
+}
 
 var version = "dev"
 
@@ -30,7 +45,7 @@ func dispatch(args []string) error {
 		printUsage()
 		return nil
 	case "auth":
-		return errors.New("not implemented yet")
+		return runAuth()
 	case "start":
 		return errors.New("not implemented yet")
 	case "credential":
@@ -38,6 +53,30 @@ func dispatch(args []string) error {
 	default:
 		return fmt.Errorf("unknown command: %s", args[0])
 	}
+}
+
+// runAuth performs the full loopback + PKCE login, persists the credential,
+// and prints a success message.
+func runAuth() error {
+	hub := hubURL()
+	tr, err := auth.Run(context.Background(), auth.Options{
+		HubURL:  hub,
+		OpenURL: browser.OpenURL,
+	})
+	if err != nil {
+		return fmt.Errorf("auth: %w", err)
+	}
+	if err := config.Save(&config.Creds{
+		Credential: tr.Credential,
+		HubURL:     hub,
+		UserEmail:  tr.UserEmail,
+		UserName:   tr.UserName,
+		ExpiresAt:  tr.ExpiresAt,
+	}); err != nil {
+		return fmt.Errorf("save credentials: %w", err)
+	}
+	fmt.Printf("Authenticated as %s (%s)\n", tr.UserName, tr.UserEmail)
+	return nil
 }
 
 func printUsage() {
