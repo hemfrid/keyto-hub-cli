@@ -62,7 +62,7 @@ func dispatch(args []string) error {
 		return nil
 	case "auth":
 		selfupdate.MaybeNotify(version, ui.IsStderrTTY(), os.Stderr)
-		return runAuth()
+		return runAuth(args[1:])
 	case "start":
 		// Banner + all interactive output go to stderr so stdout stays clean
 		// for shell integration (which captures the resolved project dir).
@@ -248,10 +248,39 @@ var runUpdate = func() error {
 	return selfupdate.Run(context.Background(), version, os.Stdout)
 }
 
+// reuseCredential reports whether a stored credential makes a fresh login
+// unnecessary: it is non-nil, not expired, for the same Hub, and --force was
+// not given. Reusing it avoids minting a duplicate CLI token on every auth.
+func reuseCredential(c *config.Creds, hub string, force bool) bool {
+	if force || c == nil {
+		return false
+	}
+	return !c.Expired() && c.HubURL == hub
+}
+
 // runAuth performs the full loopback + PKCE login, persists the credential,
-// and prints a success message.
-func runAuth() error {
+// and prints a success message. If a valid credential for the same Hub is
+// already stored it short-circuits (no new token is minted) unless --force is
+// given — this stops repeated `keyto auth` from piling up CLI tokens.
+func runAuth(args []string) error {
+	force := false
+	for _, a := range args {
+		if a == "--force" || a == "-f" {
+			force = true
+		}
+	}
+
 	hub := hubURL()
+
+	if existing, err := config.Load(); err == nil && reuseCredential(existing, hub, force) {
+		fmt.Printf("Already authenticated as %s (%s).\n", existing.UserName, existing.UserEmail)
+		if !existing.ExpiresAt.IsZero() {
+			fmt.Printf("Credential valid until %s.\n", existing.ExpiresAt.Local().Format("2006-01-02 15:04 MST"))
+		}
+		fmt.Println("Re-authenticate (mint a new token) with: keyto auth --force")
+		return nil
+	}
+
 	tr, err := auth.Run(context.Background(), auth.Options{
 		HubURL:  hub,
 		OpenURL: browser.OpenURL,
@@ -277,7 +306,7 @@ func printUsage() {
 	fmt.Println("Usage: keyto <command> [args]")
 	fmt.Println()
 	fmt.Println("Commands:")
-	fmt.Println("  auth        Authenticate with the Keyto Hub")
+	fmt.Println("  auth        Authenticate with the Keyto Hub (reuses a valid credential; --force to re-issue)")
 	fmt.Println("  start       Clone and wire a Keyto project")
 	fmt.Println("  update      Update keyto to the latest release")
 	fmt.Println("  shell-init  Print the shell integration snippet (eval \"$(keyto shell-init)\")")
