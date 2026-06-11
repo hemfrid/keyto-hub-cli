@@ -14,6 +14,7 @@ import (
 	"github.com/hemfrid/keyto-hub-cli/internal/browser"
 	"github.com/hemfrid/keyto-hub-cli/internal/config"
 	"github.com/hemfrid/keyto-hub-cli/internal/credential"
+	"github.com/hemfrid/keyto-hub-cli/internal/envsync"
 	"github.com/hemfrid/keyto-hub-cli/internal/gitwire"
 	"github.com/hemfrid/keyto-hub-cli/internal/hub"
 	"github.com/hemfrid/keyto-hub-cli/internal/project"
@@ -75,6 +76,10 @@ func dispatch(args []string) error {
 		return runShellInit(args[1:])
 	case "credential":
 		return runCredential(args)
+	case "env":
+		return runEnvDispatch(context.Background(), args[1:])
+	case "dev":
+		return runDev(context.Background(), args[1:])
 	default:
 		return fmt.Errorf("unknown command: %s", args[0])
 	}
@@ -154,6 +159,81 @@ func runStart(ctx context.Context, args []string) error {
 		return err
 	}
 	emitProjectDir(projectDir)
+	return nil
+}
+
+// runEnvDispatch routes `keyto env <subcommand>` to the appropriate handler.
+// Currently only "sync" is supported.
+func runEnvDispatch(ctx context.Context, args []string) error {
+	if len(args) == 0 || args[0] == "sync" {
+		return runEnvSync(ctx, args[1:])
+	}
+	return fmt.Errorf("unknown env subcommand: %s — try `keyto env sync`", args[0])
+}
+
+// runEnvSync implements `keyto env sync [flags]`.
+// It loads creds, builds the real Deps, and delegates to envsync.Run.
+func runEnvSync(ctx context.Context, args []string) error {
+	creds, err := config.Load()
+	if err != nil {
+		if errors.Is(err, config.ErrNotAuthed) {
+			creds = nil // envsync.Run returns the helpful "run keyto auth" error
+		} else {
+			return fmt.Errorf("env sync: load config: %w", err)
+		}
+	}
+
+	if creds != nil && creds.Expired() {
+		return fmt.Errorf("your sign-in has expired — run `keyto auth` to sign in again")
+	}
+
+	cwd, err := os.Getwd()
+	if err != nil {
+		return fmt.Errorf("env sync: get working directory: %w", err)
+	}
+
+	var fetcher envsync.HubFetcher
+	if creds != nil {
+		hubClient := &hub.Client{
+			BaseURL:    creds.HubURL,
+			Credential: creds.Credential,
+		}
+		fetcher = hubClient.FetchEnvValues
+	}
+
+	d := envsync.Deps{
+		Creds: creds,
+		Cwd:   cwd,
+		Fetch: fetcher,
+		Out:   os.Stdout,
+	}
+
+	return envsync.Run(ctx, args, d)
+}
+
+// runDevImpl implements `keyto dev`: env sync then docker compose up.
+// The sync runs on the host first (it needs ~/.keyto/credentials and browser
+// auth, so it cannot run inside a container). The documented two-step
+// baseline is: keyto env sync && docker compose up
+func runDevImpl(ctx context.Context, args []string) error {
+	fmt.Fprintln(os.Stderr, "keyto dev: syncing env…")
+	if err := runEnvSync(ctx, []string{}); err != nil {
+		return fmt.Errorf("keyto dev: env sync: %w", err)
+	}
+
+	// `docker compose up` brings up the project's backing services (the profiles
+	// already in COMPOSE_PROFILES). The app itself runs on the host via `npm run
+	// dev` — the primary local-dev workflow. To containerise the app instead, run
+	// `docker compose --profile app up` directly.
+	fmt.Fprintln(os.Stderr, "keyto dev: starting docker compose…")
+	composeArgs := append([]string{"compose", "up"}, args...)
+	cmd := exec.CommandContext(ctx, "docker", composeArgs...)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	cmd.Stdin = os.Stdin
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("keyto dev: docker compose up: %w", err)
+	}
 	return nil
 }
 
@@ -248,6 +328,12 @@ var runUpdate = func() error {
 	return selfupdate.Run(context.Background(), version, os.Stdout)
 }
 
+// runDev is a package var so dispatch routing can be tested without performing
+// a real env sync or docker compose up.
+var runDev = func(ctx context.Context, args []string) error {
+	return runDevImpl(ctx, args)
+}
+
 // reuseCredential reports whether a stored credential makes a fresh login
 // unnecessary: it is non-nil, not expired, for the same Hub, and --force was
 // not given. Reusing it avoids minting a duplicate CLI token on every auth.
@@ -311,5 +397,8 @@ func printUsage() {
 	fmt.Println("  update      Update keyto to the latest release")
 	fmt.Println("  shell-init  Print the shell integration snippet (eval \"$(keyto shell-init)\")")
 	fmt.Println("  credential  Git credential helper")
+	fmt.Println("  env sync    Sync UAT secrets into .env for local docker-compose dev")
+	fmt.Println("              Flags: --env uat|prod  --out <file>  --print  --allow-prod")
+	fmt.Println("  dev         env sync + docker compose up (requires docker)")
 	fmt.Println("  help        Show this help message")
 }

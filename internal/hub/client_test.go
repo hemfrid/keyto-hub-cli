@@ -177,3 +177,156 @@ func TestListProjects_Unauthorized_ReturnsError(t *testing.T) {
 		t.Errorf("error message leaks response body: %v", err)
 	}
 }
+
+// ---- FetchEnvValues ----
+
+func TestFetchEnvValues_Success(t *testing.T) {
+	var gotMethod, gotPath, gotAuth string
+	var gotBody map[string]interface{}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod = r.Method
+		gotPath = r.URL.Path
+		gotAuth = r.Header.Get("Authorization")
+
+		raw, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(raw, &gotBody)
+
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"env":     "uat",
+			"values":  map[string]string{"SENDGRID_API_KEY": "sg_abc123"},
+			"missing": []string{"OTHER_KEY"},
+		})
+	}))
+	defer srv.Close()
+
+	c := &hub.Client{BaseURL: srv.URL, Credential: "tok_test"}
+	values, missing, err := c.FetchEnvValues(context.Background(), "hemfrid", "acme-web", "uat", []string{"SENDGRID_API_KEY", "OTHER_KEY"})
+	if err != nil {
+		t.Fatalf("FetchEnvValues() error = %v", err)
+	}
+
+	if gotMethod != http.MethodPost {
+		t.Errorf("method = %q, want POST", gotMethod)
+	}
+	wantPath := "/api/cli/projects/hemfrid/acme-web/env/uat/values"
+	if gotPath != wantPath {
+		t.Errorf("path = %q, want %q", gotPath, wantPath)
+	}
+	if gotAuth != "Bearer tok_test" {
+		t.Errorf("Authorization = %q, want Bearer tok_test", gotAuth)
+	}
+
+	// Verify the request body contained the keys array.
+	if keysRaw, ok := gotBody["keys"]; !ok {
+		t.Error("request body missing 'keys' field")
+	} else {
+		keys := keysRaw.([]interface{})
+		if len(keys) != 2 || keys[0].(string) != "SENDGRID_API_KEY" || keys[1].(string) != "OTHER_KEY" {
+			t.Errorf("request body keys = %v, want [SENDGRID_API_KEY OTHER_KEY]", keys)
+		}
+	}
+
+	if values["SENDGRID_API_KEY"] != "sg_abc123" {
+		t.Errorf("values[SENDGRID_API_KEY] = %q, want sg_abc123", values["SENDGRID_API_KEY"])
+	}
+	if len(missing) != 1 || missing[0] != "OTHER_KEY" {
+		t.Errorf("missing = %v, want [OTHER_KEY]", missing)
+	}
+}
+
+func TestFetchEnvValues_EmptyKeys_NoOp(t *testing.T) {
+	// An empty keys array is a valid no-op: server responds 200 with empty values+missing.
+	var gotBody map[string]interface{}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(raw, &gotBody)
+
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"env":     "uat",
+			"values":  map[string]string{},
+			"missing": []string{},
+		})
+	}))
+	defer srv.Close()
+
+	c := &hub.Client{BaseURL: srv.URL, Credential: "tok_test"}
+	values, missing, err := c.FetchEnvValues(context.Background(), "hemfrid", "acme-web", "uat", []string{})
+	if err != nil {
+		t.Fatalf("FetchEnvValues() error = %v", err)
+	}
+	if len(values) != 0 {
+		t.Errorf("values not empty: %v", values)
+	}
+	if len(missing) != 0 {
+		t.Errorf("missing not empty: %v", missing)
+	}
+
+	// Wire format must be {"keys":[]} — not null — so an empty slice is sent explicitly.
+	if keysRaw, ok := gotBody["keys"]; !ok {
+		t.Error("request body missing 'keys' field")
+	} else {
+		keys, ok := keysRaw.([]interface{})
+		if !ok || keys == nil {
+			t.Errorf("request body 'keys' is not a JSON array: %v", keysRaw)
+		} else if len(keys) != 0 {
+			t.Errorf("request body keys = %v, want empty array []", keys)
+		}
+	}
+}
+
+func TestFetchEnvValues_Unauthorized_ReturnsError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+	}))
+	defer srv.Close()
+
+	c := &hub.Client{BaseURL: srv.URL}
+	_, _, err := c.FetchEnvValues(context.Background(), "hemfrid", "acme-web", "uat", []string{"KEY"})
+	if err == nil {
+		t.Fatal("expected error on 401, got nil")
+	}
+	// Must surface a recognizable status; must not leak the body.
+	if !strings.Contains(err.Error(), "401") {
+		t.Errorf("error should reference 401, got: %v", err)
+	}
+	if strings.Contains(err.Error(), "unauthorized") {
+		t.Errorf("error must not leak response body: %v", err)
+	}
+}
+
+func TestFetchEnvValues_Forbidden_ReturnsError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "forbidden", http.StatusForbidden)
+	}))
+	defer srv.Close()
+
+	c := &hub.Client{BaseURL: srv.URL}
+	_, _, err := c.FetchEnvValues(context.Background(), "hemfrid", "acme-web", "uat", []string{"KEY"})
+	if err == nil {
+		t.Fatal("expected error on 403, got nil")
+	}
+	if !strings.Contains(err.Error(), "403") {
+		t.Errorf("error should reference 403, got: %v", err)
+	}
+}
+
+func TestFetchEnvValues_ContextCancellation(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-r.Context().Done()
+		http.Error(w, "cancelled", http.StatusServiceUnavailable)
+	}))
+	defer srv.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	c := &hub.Client{BaseURL: srv.URL}
+	_, _, err := c.FetchEnvValues(ctx, "hemfrid", "acme-web", "uat", []string{"KEY"})
+	if err == nil {
+		t.Fatal("expected error on cancelled context, got nil")
+	}
+}
