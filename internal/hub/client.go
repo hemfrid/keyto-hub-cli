@@ -163,8 +163,8 @@ func (c *Client) FetchEnvValues(
 		return nil, nil, fmt.Errorf("fetch-env-values: marshal request: %w", err)
 	}
 
-	url := fmt.Sprintf("%s/api/cli/projects/%s/%s/env/%s/values", c.BaseURL, org, repo, env)
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	endpoint := fmt.Sprintf("%s/api/cli/projects/%s/%s/env/%s/values", c.BaseURL, org, repo, env)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
 	if err != nil {
 		return nil, nil, fmt.Errorf("fetch-env-values: build request: %w", err)
 	}

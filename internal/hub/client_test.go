@@ -222,9 +222,9 @@ func TestFetchEnvValues_Success(t *testing.T) {
 	if keysRaw, ok := gotBody["keys"]; !ok {
 		t.Error("request body missing 'keys' field")
 	} else {
-		keys, _ := keysRaw.([]interface{})
-		if len(keys) != 2 {
-			t.Errorf("request body keys len = %d, want 2", len(keys))
+		keys := keysRaw.([]interface{})
+		if len(keys) != 2 || keys[0].(string) != "SENDGRID_API_KEY" || keys[1].(string) != "OTHER_KEY" {
+			t.Errorf("request body keys = %v, want [SENDGRID_API_KEY OTHER_KEY]", keys)
 		}
 	}
 
@@ -238,7 +238,12 @@ func TestFetchEnvValues_Success(t *testing.T) {
 
 func TestFetchEnvValues_EmptyKeys_NoOp(t *testing.T) {
 	// An empty keys array is a valid no-op: server responds 200 with empty values+missing.
+	var gotBody map[string]interface{}
+
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(raw, &gotBody)
+
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{
 			"env":     "uat",
@@ -258,6 +263,18 @@ func TestFetchEnvValues_EmptyKeys_NoOp(t *testing.T) {
 	}
 	if len(missing) != 0 {
 		t.Errorf("missing not empty: %v", missing)
+	}
+
+	// Wire format must be {"keys":[]} — not null — so an empty slice is sent explicitly.
+	if keysRaw, ok := gotBody["keys"]; !ok {
+		t.Error("request body missing 'keys' field")
+	} else {
+		keys, ok := keysRaw.([]interface{})
+		if !ok || keys == nil {
+			t.Errorf("request body 'keys' is not a JSON array: %v", keysRaw)
+		} else if len(keys) != 0 {
+			t.Errorf("request body keys = %v, want empty array []", keys)
+		}
 	}
 }
 
@@ -291,6 +308,9 @@ func TestFetchEnvValues_Forbidden_ReturnsError(t *testing.T) {
 	_, _, err := c.FetchEnvValues(context.Background(), "hemfrid", "acme-web", "uat", []string{"KEY"})
 	if err == nil {
 		t.Fatal("expected error on 403, got nil")
+	}
+	if !strings.Contains(err.Error(), "403") {
+		t.Errorf("error should reference 403, got: %v", err)
 	}
 }
 
