@@ -127,3 +127,72 @@ func (c *Client) ListProjects(ctx context.Context) ([]Project, error) {
 
 	return lr.Projects, nil
 }
+
+// fetchEnvValuesRequest is the JSON body sent to POST /api/cli/projects/{org}/{repo}/env/{env}/values.
+type fetchEnvValuesRequest struct {
+	Keys []string `json:"keys"`
+}
+
+// fetchEnvValuesResponse is the JSON body returned by the values endpoint.
+type fetchEnvValuesResponse struct {
+	Env     string            `json:"env"`
+	Values  map[string]string `json:"values"`
+	Missing []string          `json:"missing"`
+}
+
+// FetchEnvValues POSTs a set of key names to the Hub and returns the resolved
+// values and any keys the Hub could not resolve.
+//
+// Binding contract (spec §2.5 / §3.4):
+//
+//	POST /api/cli/projects/{org}/{repo}/env/{env}/values
+//	Request:  { "keys": ["KEY_A", ...] }
+//	Response: { "env": "uat", "values": { "KEY_A": "..." }, "missing": ["KEY_B"] }
+//
+// An empty keys slice is a valid no-op — the server returns 200 with empty
+// values and missing. Non-200 returns an error with the HTTP status but never
+// the raw body (to avoid leaking error details).
+func (c *Client) FetchEnvValues(
+	ctx context.Context,
+	org, repo, env string,
+	keys []string,
+) (values map[string]string, missing []string, err error) {
+	payload := fetchEnvValuesRequest{Keys: keys}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return nil, nil, fmt.Errorf("fetch-env-values: marshal request: %w", err)
+	}
+
+	url := fmt.Sprintf("%s/api/cli/projects/%s/%s/env/%s/values", c.BaseURL, org, repo, env)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		return nil, nil, fmt.Errorf("fetch-env-values: build request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if c.Credential != "" {
+		req.Header.Set("Authorization", "Bearer "+c.Credential)
+	}
+
+	resp, err := c.httpClient().Do(req)
+	if err != nil {
+		return nil, nil, fmt.Errorf("fetch-env-values: request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, nil, fmt.Errorf("fetch-env-values failed: %s", resp.Status)
+	}
+
+	var fr fetchEnvValuesResponse
+	if err := json.NewDecoder(resp.Body).Decode(&fr); err != nil {
+		return nil, nil, fmt.Errorf("fetch-env-values: decode response: %w", err)
+	}
+
+	if fr.Values == nil {
+		fr.Values = map[string]string{}
+	}
+	if fr.Missing == nil {
+		fr.Missing = []string{}
+	}
+	return fr.Values, fr.Missing, nil
+}
