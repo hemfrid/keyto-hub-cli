@@ -3,7 +3,38 @@ package main
 import (
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/hemfrid/keyto-hub-cli/internal/config"
 )
+
+// reuseCredential decides whether `keyto auth` should reuse an existing
+// credential instead of minting a new CLI token on the Hub.
+func TestReuseCredential(t *testing.T) {
+	const hub = "https://hub.keytolabs.com"
+	future := time.Now().Add(24 * time.Hour)
+	past := time.Now().Add(-time.Hour)
+	valid := &config.Creds{HubURL: hub, ExpiresAt: future, UserName: "alice"}
+
+	cases := []struct {
+		name  string
+		c     *config.Creds
+		force bool
+		want  bool
+	}{
+		{"valid credential, same hub", valid, false, true},
+		{"no stored credential", nil, false, false},
+		{"expired credential", &config.Creds{HubURL: hub, ExpiresAt: past}, false, false},
+		{"different hub", &config.Creds{HubURL: "https://other.example", ExpiresAt: future}, false, false},
+		{"--force always re-auths", valid, true, false},
+		{"no-expiry credential treated as valid", &config.Creds{HubURL: hub}, false, true},
+	}
+	for _, tc := range cases {
+		if got := reuseCredential(tc.c, hub, tc.force); got != tc.want {
+			t.Errorf("%s: reuseCredential = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
 
 func TestDispatch_UnknownCommand(t *testing.T) {
 	err := dispatch([]string{"bogus"})

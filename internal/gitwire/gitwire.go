@@ -23,8 +23,15 @@ type Runner func(dir string, args ...string) error
 // the keyto helper. Without the reset, a generic helper runs first and caches
 // the Hub credential — which would mask revocation/rotation at the Hub (the
 // stale cached copy keeps working). This mirrors how `gh` scopes itself to
-// github.com. Using a plain `config` (replace) for the reset followed by
-// `--add` keeps re-wiring idempotent.
+// github.com.
+//
+// The reset uses `--replace-all` rather than a plain `config` set: after the
+// first wiring the key already holds two values (the empty reset and the keyto
+// helper), and a plain set refuses to overwrite a multi-valued key ("cannot
+// overwrite multiple values with a single value"). `--replace-all` collapses
+// any existing values to the single empty one, so re-wiring an already-wired
+// repo — e.g. resuming a project via `keyto start` — stays idempotent and also
+// repairs repos left in the multi-valued state by older versions.
 //
 // The first error encountered is returned immediately; subsequent steps are
 // not attempted.
@@ -34,7 +41,7 @@ func Wire(run Runner, dir string, m *project.Marker, email, name string) error {
 
 	steps := [][]string{
 		{"remote", "set-url", "origin", remoteURL},
-		{"config", credKey, ""},
+		{"config", "--replace-all", credKey, ""},
 		{"config", "--add", credKey, "!keyto credential"},
 		{"config", "user.email", email},
 		{"config", "user.name", name},
