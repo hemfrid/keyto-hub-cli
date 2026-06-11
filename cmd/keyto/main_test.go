@@ -2,11 +2,18 @@ package main
 
 import (
 	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/hemfrid/keyto-hub-cli/internal/config"
+	"github.com/hemfrid/keyto-hub-cli/internal/envsync"
+	"github.com/hemfrid/keyto-hub-cli/internal/hub"
 )
 
 // reuseCredential decides whether `keyto auth` should reuse an existing
@@ -139,5 +146,97 @@ func TestDispatch_DevRoutesToRunDev(t *testing.T) {
 	}
 	if !called {
 		t.Fatal("dispatch did not route 'dev' to runDev")
+	}
+}
+
+// TestRunEnvSync_Integration exercises the full envsync.Run path end-to-end
+// against a local httptest.Server that stands in for the Hub values endpoint.
+// It uses Deps.Cwd injection (no os.Chdir — process-global mutation) and wires
+// the fake Hub via a staticFetch-style HubFetcher backed by httptest.NewServer.
+func TestRunEnvSync_Integration(t *testing.T) {
+	if testing.Short() {
+		t.Skip("integration test skipped with -short")
+	}
+
+	// Stand up a fake Hub values endpoint.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"env":     "uat",
+			"values":  map[string]string{"SENDGRID_API_KEY": "sg_integration_value"},
+			"missing": []string{},
+		})
+	}))
+	defer srv.Close()
+
+	// Build a fully isolated project directory in a temp dir.
+	projectDir := t.TempDir()
+
+	// Write project marker.
+	keytoDir := filepath.Join(projectDir, ".keyto")
+	if err := os.MkdirAll(keytoDir, 0o755); err != nil {
+		t.Fatalf("mkdirAll: %v", err)
+	}
+	marker := map[string]string{"name": "acme-web", "org": "hemfrid", "repo": "acme-web", "hub_url": srv.URL}
+	markerData, _ := json.MarshalIndent(marker, "", "  ")
+	if err := os.WriteFile(filepath.Join(keytoDir, "project.json"), markerData, 0o644); err != nil {
+		t.Fatalf("write project.json: %v", err)
+	}
+
+	// Write inventory.
+	inv := map[string]interface{}{
+		"schemaVersion": 1,
+		"keys": []map[string]interface{}{
+			{"key": "DATABASE_URL", "localSource": "container", "service": "postgres", "usages": []string{}},
+			{"key": "SENDGRID_API_KEY", "localSource": "uat", "usages": []string{}},
+			{"key": "DEV_USER_EMAIL", "localSource": "placeholder", "usages": []string{}},
+		},
+	}
+	invData, _ := json.MarshalIndent(inv, "", "  ")
+	if err := os.WriteFile(filepath.Join(keytoDir, "env-inventory.json"), invData, 0o644); err != nil {
+		t.Fatalf("write inventory: %v", err)
+	}
+
+	// Wire the fake Hub via a HubFetcher that delegates to the httptest server.
+	// This exercises the same code path as the real hub.Client.FetchEnvValues
+	// without touching any process-global state.
+	fakeFetcher := func(ctx context.Context, org, repo, env string, keys []string) (map[string]string, []string, error) {
+		hubClient := &hub.Client{BaseURL: srv.URL, Credential: "tok_integration"}
+		return hubClient.FetchEnvValues(ctx, org, repo, env, keys)
+	}
+
+	outPath := filepath.Join(projectDir, ".env.test")
+	creds := &config.Creds{
+		Credential: "tok_integration",
+		HubURL:     srv.URL,
+		UserEmail:  "alice@keytogroup.com",
+		UserName:   "Alice",
+	}
+
+	d := envsync.Deps{
+		Creds: creds,
+		Cwd:   projectDir, // inject project dir — no os.Chdir
+		Fetch: fakeFetcher,
+		Out:   &strings.Builder{},
+	}
+
+	if err := envsync.Run(context.Background(), []string{"--out", outPath}, d); err != nil {
+		t.Fatalf("envsync.Run integration error: %v", err)
+	}
+
+	data, err := os.ReadFile(outPath)
+	if err != nil {
+		t.Fatalf("read .env.test: %v", err)
+	}
+	content := string(data)
+
+	if !strings.Contains(content, "SENDGRID_API_KEY=sg_integration_value") {
+		t.Errorf("integration: .env missing SENDGRID_API_KEY; got:\n%s", content)
+	}
+	if !strings.Contains(content, "DATABASE_URL=postgres://") {
+		t.Errorf("integration: .env missing DATABASE_URL; got:\n%s", content)
+	}
+	if !strings.Contains(content, "# DEV_USER_EMAIL=") {
+		t.Errorf("integration: .env missing placeholder comment; got:\n%s", content)
 	}
 }
