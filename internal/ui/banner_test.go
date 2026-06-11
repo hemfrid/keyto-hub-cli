@@ -6,9 +6,10 @@ import (
 	"testing"
 )
 
-// stableArtSubstring is a run of % chars that definitely appears in banner.txt.
-// We pick 10 consecutive % which appears many times in the art.
-const stableArtSubstring = "%%%%%%%%%%"
+// stableArtSubstring is a run of full-block glyphs that appears only in the
+// KEYTO wordmark portion of the wide banner art (the rocket above it is drawn
+// with braille glyphs, so this never collides with it or the compact line).
+const stableArtSubstring = "█████"
 
 func TestBanner_TTY_WideTerminal_WritesFullArt(t *testing.T) {
 	var buf bytes.Buffer
