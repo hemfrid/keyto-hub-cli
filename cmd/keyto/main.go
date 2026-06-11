@@ -202,10 +202,10 @@ func runEnvSync(ctx context.Context, args []string) error {
 	}
 
 	d := envsync.Deps{
-		Creds:  creds,
-		Cwd:    cwd,
-		Fetch:  fetcher,
-		Out:    os.Stdout,
+		Creds: creds,
+		Cwd:   cwd,
+		Fetch: fetcher,
+		Out:   os.Stdout,
 	}
 
 	return envsync.Run(ctx, args, d)
@@ -221,6 +221,10 @@ func runDevImpl(ctx context.Context, args []string) error {
 		return fmt.Errorf("keyto dev: env sync: %w", err)
 	}
 
+	// `docker compose up` brings up the project's backing services (the profiles
+	// already in COMPOSE_PROFILES). The app itself runs on the host via `npm run
+	// dev` — the primary local-dev workflow. To containerise the app instead, run
+	// `docker compose --profile app up` directly.
 	fmt.Fprintln(os.Stderr, "keyto dev: starting docker compose…")
 	composeArgs := append([]string{"compose", "up"}, args...)
 	cmd := exec.CommandContext(ctx, "docker", composeArgs...)

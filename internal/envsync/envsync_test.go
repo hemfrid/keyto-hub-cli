@@ -83,10 +83,10 @@ type inventory struct {
 func baseDeps(t *testing.T, dir string) envsync.Deps {
 	t.Helper()
 	return envsync.Deps{
-		Creds:    makeCreds(),
-		Cwd:      dir,
-		Fetch:    noopFetch,
-		Out:      &bytes.Buffer{},
+		Creds: makeCreds(),
+		Cwd:   dir,
+		Fetch: noopFetch,
+		Out:   &bytes.Buffer{},
 	}
 }
 
