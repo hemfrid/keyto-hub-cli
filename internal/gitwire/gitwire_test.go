@@ -51,9 +51,11 @@ func TestWire_MakesExactly5CallsInOrder(t *testing.T) {
 		"remote", "set-url", "origin", "https://hub.example.com/git/hemfrid/acme-web.git",
 	})
 
-	// Call 1: reset inherited credential helpers for the Hub host (empty value)
+	// Call 1: reset inherited credential helpers for the Hub host. --replace-all
+	// collapses any pre-existing values, so re-wiring an already-wired repo is
+	// idempotent — a plain `config` set errors on a multi-valued key.
 	assertCall(t, calls[1], "/repo", []string{
-		"config", "credential.https://hub.example.com.helper", "",
+		"config", "--replace-all", "credential.https://hub.example.com.helper", "",
 	})
 
 	// Call 2: add keyto as the sole credential helper for the Hub host
