@@ -74,13 +74,14 @@ type mysqlParams struct {
 	Database     string
 }
 
+var nonIdentRe = regexp.MustCompile(`[^a-z0-9_]`)
+
 // normalizeProjectName converts a project name to a database-safe identifier
 // (lower-case, hyphens → underscores, non-alnum-underscore stripped).
 func normalizeProjectName(name string) string {
-	re := regexp.MustCompile(`[^a-z0-9_]`)
 	s := strings.ToLower(name)
 	s = strings.ReplaceAll(s, "-", "_")
-	s = re.ReplaceAllString(s, "")
+	s = nonIdentRe.ReplaceAllString(s, "")
 	if s == "" {
 		s = "app"
 	}
@@ -192,6 +193,24 @@ func hasService(keys []inventoryKey, service string) bool {
 	return false
 }
 
+// quoteEnvValue wraps a value in double quotes (escaping where needed) when it
+// contains characters that would corrupt a .env line — whitespace, '#', quotes,
+// backslash, or newlines. Plain values are returned as-is so docker-compose
+// ${VAR} substitution and `next dev` both read them unchanged.
+func quoteEnvValue(v string) string {
+	if v == "" || !strings.ContainsAny(v, " \t\r\n#\"'\\") {
+		return v
+	}
+	r := strings.NewReplacer(
+		`\`, `\\`,
+		`"`, `\"`,
+		"\n", `\n`,
+		"\r", `\r`,
+		"\t", `\t`,
+	)
+	return `"` + r.Replace(v) + `"`
+}
+
 const managedHeader = `# ============================================================
 # Managed by keyto env sync — DO NOT EDIT MANUALLY.
 # Re-run: keyto env sync
@@ -282,7 +301,7 @@ func renderEnv(
 			if missingSet[k.Key] {
 				sb.WriteString(fmt.Sprintf("# MISSING: %s (not set in %s)\n", k.Key, targetEnv))
 			} else if val, ok := uatValues[k.Key]; ok {
-				sb.WriteString(fmt.Sprintf("%s=%s\n", k.Key, val))
+				sb.WriteString(fmt.Sprintf("%s=%s\n", k.Key, quoteEnvValue(val)))
 			} else {
 				// Key was not in missing and not in values — treat as missing.
 				sb.WriteString(fmt.Sprintf("# MISSING: %s (not set in %s)\n", k.Key, targetEnv))

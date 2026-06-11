@@ -527,3 +527,81 @@ func TestRun_FetchReceivesOnlyUATKeys(t *testing.T) {
 		t.Errorf("Fetch received keys %v, want [SENDGRID_API_KEY]", fetchedKeys)
 	}
 }
+
+// ---- T15: UAT secret values with special chars are quoted/escaped in .env ----
+
+func TestRun_UATValueQuoting(t *testing.T) {
+	m := &project.Marker{Name: "acme-web", Org: "hemfrid", Repo: "acme-web", HubURL: "https://hub.example.com"}
+	dir := makeProjectDir(t, m)
+
+	writeJSON(t, filepath.Join(dir, ".keyto", "env-inventory.json"), inventory{
+		SchemaVersion: 1,
+		Keys: []inventoryKey{
+			{Key: "WITH_SPACE", LocalSource: "uat", Usages: []string{}},
+			{Key: "WITH_HASH", LocalSource: "uat", Usages: []string{}},
+			{Key: "WITH_QUOTE", LocalSource: "uat", Usages: []string{}},
+			{Key: "WITH_NEWLINE", LocalSource: "uat", Usages: []string{}},
+			{Key: "PLAIN", LocalSource: "uat", Usages: []string{}},
+		},
+	})
+
+	fetchValues := map[string]string{
+		"WITH_SPACE":   "hello world",
+		"WITH_HASH":    "a#b",
+		"WITH_QUOTE":   `a"b`,
+		"WITH_NEWLINE": "a\nb",
+		"PLAIN":        "sg_abc123",
+	}
+
+	outPath := filepath.Join(dir, ".env")
+	d := baseDeps(t, dir)
+	d.Fetch = staticFetch(fetchValues, []string{})
+
+	err := envsync.Run(context.Background(), []string{"--out", outPath}, d)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	data, err := os.ReadFile(outPath)
+	if err != nil {
+		t.Fatalf("read .env: %v", err)
+	}
+	content := string(data)
+
+	// Split into physical lines to check for stray injected lines.
+	lines := strings.Split(content, "\n")
+
+	// Helper: require a specific physical line is present.
+	requireLine := func(want string) {
+		t.Helper()
+		for _, l := range lines {
+			if l == want {
+				return
+			}
+		}
+		t.Errorf("expected line %q not found in .env:\n%s", want, content)
+	}
+
+	requireLine(`WITH_SPACE="hello world"`)
+	requireLine(`WITH_HASH="a#b"`)
+	requireLine(`WITH_QUOTE="a\"b"`)
+	requireLine(`WITH_NEWLINE="a\nb"`) // literal \n, single physical line
+	requireLine(`PLAIN=sg_abc123`)     // plain value stays unquoted
+
+	// The newline value must NOT inject a spurious extra physical line.
+	// Count the UAT key assignment lines (start with one of our key names) —
+	// we expect exactly 5 (one per key, no stray injected lines from the newline value).
+	uatKeyPrefixes := []string{"WITH_SPACE=", "WITH_HASH=", "WITH_QUOTE=", "WITH_NEWLINE=", "PLAIN="}
+	keyLines := 0
+	for _, l := range lines {
+		for _, prefix := range uatKeyPrefixes {
+			if strings.HasPrefix(l, prefix) {
+				keyLines++
+				break
+			}
+		}
+	}
+	if keyLines != 5 {
+		t.Errorf("expected 5 UAT key lines (no stray injected lines), got %d; content:\n%s", keyLines, content)
+	}
+}
