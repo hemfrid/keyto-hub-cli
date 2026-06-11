@@ -6,10 +6,10 @@ import (
 	"testing"
 )
 
-// stableArtSubstring is a run of full-block glyphs that appears only in the
-// KEYTO wordmark portion of the wide banner art (the rocket above it is drawn
-// with braille glyphs, so this never collides with it or the compact line).
-const stableArtSubstring = "█████"
+// stableArtSubstring is a run of % chars from the KEYTO logo portion of the
+// wide banner art. The rocket above it uses braille glyphs (no %), and the
+// compact one-liner has no %, so this never collides with either.
+const stableArtSubstring = "%%%%%%%%%%"
 
 func TestBanner_TTY_WideTerminal_WritesFullArt(t *testing.T) {
 	var buf bytes.Buffer
