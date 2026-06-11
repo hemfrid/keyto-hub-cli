@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"strings"
 	"testing"
 	"time"
@@ -105,5 +106,38 @@ func TestCloneArgs_NoHubURLOmitsHelper(t *testing.T) {
 
 	if len(args) != 3 || args[0] != "clone" {
 		t.Fatalf("expected plain [clone <url> <dir>], got %v", args)
+	}
+}
+
+// TestDispatch_EnvSubcommand_Unknown ensures `keyto env unknown` returns an error.
+func TestDispatch_EnvSubcommand_Unknown(t *testing.T) {
+	// `keyto env` with a subcommand that is not "sync" should fail.
+	// Note: `keyto env sync` requires real auth + cwd setup, so we test
+	// the dispatch routing only at the unknown-subcommand level.
+	err := dispatch([]string{"env", "unknown"})
+	if err == nil {
+		t.Fatal("expected error for unknown env subcommand, got nil")
+	}
+	if !strings.Contains(err.Error(), "unknown") {
+		t.Errorf("error should mention 'unknown', got: %v", err)
+	}
+}
+
+// TestDispatch_DevRoutesToRunDev ensures `keyto dev` routes to the runDev
+// package variable (similar to the runUpdate pattern), without running Docker.
+func TestDispatch_DevRoutesToRunDev(t *testing.T) {
+	called := false
+	origRunDev := runDev
+	runDev = func(ctx context.Context, args []string) error {
+		called = true
+		return nil
+	}
+	t.Cleanup(func() { runDev = origRunDev })
+
+	if err := dispatch([]string{"dev"}); err != nil {
+		t.Fatalf("dispatch(dev) returned error: %v", err)
+	}
+	if !called {
+		t.Fatal("dispatch did not route 'dev' to runDev")
 	}
 }
