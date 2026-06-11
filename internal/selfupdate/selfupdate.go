@@ -24,8 +24,6 @@ import (
 const (
 	// DefaultAPI is the GitHub releases endpoint for the latest published release.
 	DefaultAPI = "https://api.github.com/repos/hemfrid/keyto-hub-cli/releases/latest"
-	// installCmd is the one-liner that updates an installed CLI.
-	installCmd = "curl -fsSL https://raw.githubusercontent.com/hemfrid/keyto-hub-cli/main/install.sh | sh"
 
 	checkTTL    = 24 * time.Hour
 	httpTimeout = 1500 * time.Millisecond
@@ -114,7 +112,7 @@ func IsNewer(current, latest string) bool {
 
 // Notice formats the update nudge.
 func Notice(current, latest string) string {
-	return fmt.Sprintf("\nA new keyto is available: %s (you have %s)\n  Update:  %s\n", latest, current, installCmd)
+	return fmt.Sprintf("\nA new keyto is available: %s (you have %s)\n  Update:  keyto update\n", latest, current)
 }
 
 // parseSemver parses "vX.Y.Z" (leading "v" optional; pre-release/build metadata

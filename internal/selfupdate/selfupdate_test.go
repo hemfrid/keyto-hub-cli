@@ -63,9 +63,9 @@ func TestLatestTag_Non200_Errors(t *testing.T) {
 	}
 }
 
-func TestNotice_ContainsVersionsAndInstall(t *testing.T) {
+func TestNotice_ContainsVersionsAndUpdateCmd(t *testing.T) {
 	n := Notice("v0.1.1", "v0.1.2")
-	for _, want := range []string{"v0.1.1", "v0.1.2", "install.sh"} {
+	for _, want := range []string{"v0.1.1", "v0.1.2", "keyto update"} {
 		if !strings.Contains(n, want) {
 			t.Errorf("Notice missing %q:\n%s", want, n)
 		}

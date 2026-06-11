@@ -29,6 +29,22 @@ func TestDispatch_Help(t *testing.T) {
 	}
 }
 
+// dispatch must route the "update" command to runUpdate (and not fall through
+// to "unknown command"). runUpdate is stubbed so no real network update runs.
+func TestDispatch_UpdateRoutesToRunUpdate(t *testing.T) {
+	called := false
+	orig := runUpdate
+	runUpdate = func() error { called = true; return nil }
+	t.Cleanup(func() { runUpdate = orig })
+
+	if err := dispatch([]string{"update"}); err != nil {
+		t.Fatalf("dispatch(update) returned error: %v", err)
+	}
+	if !called {
+		t.Fatal("dispatch did not route 'update' to runUpdate")
+	}
+}
+
 // cloneArgs must inject the keyto credential helper BEFORE the clone subcommand
 // so the clone authenticates to the Hub proxy instead of prompting for a username.
 func TestCloneArgs_InjectsCredentialHelperBeforeClone(t *testing.T) {

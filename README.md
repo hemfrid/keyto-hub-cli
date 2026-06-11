@@ -29,6 +29,7 @@ version with `KEYTO_VERSION=vX.Y.Z`; override the location with
 ```sh
 keyto auth      # sign in via your browser (Keyto SSO) — stores a credential locally
 keyto start     # pick a project, clone it, and wire git to push through the Hub
+keyto update    # update keyto in place to the latest release
 ```
 
 Then edit locally (with Claude Code, your editor, whatever) and `git push` — it
@@ -68,5 +69,10 @@ go build -o keyto ./cmd/keyto
   access at the Hub cuts pushes immediately.
 
 `keyto auth` / `keyto start` also check (at most once a day, cached in
-`~/.keyto/`) whether a newer release exists and print an update hint if so. The
-check is fail-silent and never runs in non-interactive sessions.
+`~/.keyto/`) whether a newer release exists and nudge you to run `keyto update`.
+The check is fail-silent and never runs in non-interactive sessions.
+
+`keyto update` downloads the latest release binary for your platform, verifies
+its sha256 against the published `checksums.txt`, and atomically replaces the
+running executable (on Windows the old binary is moved aside, since a running
+`.exe` can't be overwritten in place).

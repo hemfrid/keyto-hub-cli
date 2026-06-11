@@ -69,6 +69,8 @@ func dispatch(args []string) error {
 		ui.Banner(os.Stderr, ui.IsStderrTTY(), ui.TermWidth(), false, version)
 		selfupdate.MaybeNotify(version, ui.IsStderrTTY(), os.Stderr)
 		return runStart(context.Background(), args[1:])
+	case "update":
+		return runUpdate()
 	case "shell-init":
 		return runShellInit(args[1:])
 	case "credential":
@@ -239,6 +241,13 @@ func runCredential(args []string) error {
 	return credential.Helper(op, os.Stdin, os.Stdout, os.Stderr, creds, hubHost)
 }
 
+// runUpdate implements `keyto update`: fetch the latest release, verify it, and
+// replace the running binary. It is a package var so the dispatch routing can
+// be tested without performing a real network update.
+var runUpdate = func() error {
+	return selfupdate.Run(context.Background(), version, os.Stdout)
+}
+
 // runAuth performs the full loopback + PKCE login, persists the credential,
 // and prints a success message.
 func runAuth() error {
@@ -270,6 +279,7 @@ func printUsage() {
 	fmt.Println("Commands:")
 	fmt.Println("  auth        Authenticate with the Keyto Hub")
 	fmt.Println("  start       Clone and wire a Keyto project")
+	fmt.Println("  update      Update keyto to the latest release")
 	fmt.Println("  shell-init  Print the shell integration snippet (eval \"$(keyto shell-init)\")")
 	fmt.Println("  credential  Git credential helper")
 	fmt.Println("  help        Show this help message")
