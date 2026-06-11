@@ -205,7 +205,7 @@ func runEnvSync(ctx context.Context, args []string) error {
 		Creds:  creds,
 		Cwd:    cwd,
 		Fetch:  fetcher,
-		Out:    os.Stderr,
+		Out:    os.Stdout,
 	}
 
 	return envsync.Run(ctx, args, d)
