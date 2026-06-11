@@ -11,7 +11,7 @@ import (
 var bannerArt string
 
 const compact = "▌ KEYTO ▐ · local dev"
-const bannerWidth = 57 // rocket art width in runes
+const bannerWidth = 91 // combined KEYTO logo + rocket art width in runes
 
 // Banner writes the startup banner to w, gated on interactivity. Pure +
 // testable: callers pass the TTY/width facts (see tty.go helpers).
