@@ -12,6 +12,7 @@ import (
 
 	"github.com/hemfrid/keyto-hub-cli/internal/auth"
 	"github.com/hemfrid/keyto-hub-cli/internal/browser"
+	"github.com/hemfrid/keyto-hub-cli/internal/checkout"
 	"github.com/hemfrid/keyto-hub-cli/internal/config"
 	"github.com/hemfrid/keyto-hub-cli/internal/credential"
 	"github.com/hemfrid/keyto-hub-cli/internal/envsync"
@@ -20,7 +21,6 @@ import (
 	"github.com/hemfrid/keyto-hub-cli/internal/project"
 	"github.com/hemfrid/keyto-hub-cli/internal/selfupdate"
 	"github.com/hemfrid/keyto-hub-cli/internal/shellinit"
-	"github.com/hemfrid/keyto-hub-cli/internal/checkout"
 	"github.com/hemfrid/keyto-hub-cli/internal/ui"
 )
 
