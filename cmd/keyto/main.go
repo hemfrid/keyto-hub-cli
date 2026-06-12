@@ -767,6 +767,7 @@ func printUsage() {
 	fmt.Println("              Flags: --no-sync  --no-migrate  --no-install  --yes")
 	fmt.Println("  doctor      Diagnose local prerequisites (git, Docker, Node) and print how to fix them")
 	fmt.Println("              Flags: --json (machine output)  --fix (install fixable ones, consent-gated)")
+	fmt.Println("                     --report/--no-report (upload the report to the Hub; default-on when authed)")
 	fmt.Println("  update      Update keyto to the latest release")
 	fmt.Println("  shell-init  Print the shell integration snippet (eval \"$(keyto shell-init)\")")
 	fmt.Println("  credential  Git credential helper")
