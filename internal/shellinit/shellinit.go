@@ -1,13 +1,15 @@
-// Package shellinit emits the shell function that gives `keyto start` the
+// Package shellinit emits the shell function that gives `keyto checkout` the
 // ability to change the calling shell's working directory after a clone.
 //
 // A CLI binary is a child process and cannot cd its parent shell, so we ship a
 // thin wrapper function (sourced from the user's shell rc via
-// `eval "$(keyto shell-init)"`). For `keyto start` the function runs the real
-// binary with KEYTO_SHELL_INTEGRATION=1 — which makes the binary print the
-// resolved project directory on stdout and route all human output to stderr —
-// then cd's into that directory. Every other subcommand is passed straight
-// through to the real binary unchanged.
+// `eval "$(keyto shell-init)"`). For `keyto checkout` the function runs the
+// real binary with KEYTO_SHELL_INTEGRATION=1 — which makes the binary print
+// the resolved project directory on stdout and route all human output to
+// stderr — then cd's into that directory. `keyto start` will become a
+// foreground boot loop whose stdout must stream (not be captured), so it is
+// passed straight through to the real binary unchanged. Every other subcommand
+// is also passed straight through.
 package shellinit
 
 import "fmt"
@@ -15,7 +17,7 @@ import "fmt"
 // posixFunc is the wrapper for POSIX-family shells (bash, zsh, sh, ksh). It
 // avoids `local` (not POSIX) by using a uniquely-named variable it unsets.
 const posixFunc = `keyto() {
-  if [ "$1" = "start" ]; then
+  if [ "$1" = "checkout" ]; then
     __keyto_target="$(KEYTO_SHELL_INTEGRATION=1 command keyto "$@")" || return $?
     if [ -n "$__keyto_target" ] && [ -d "$__keyto_target" ]; then
       cd "$__keyto_target" || return $?
@@ -28,7 +30,7 @@ const posixFunc = `keyto() {
 
 // fishFunc is the wrapper for the fish shell.
 const fishFunc = `function keyto
-  if test "$argv[1]" = "start"
+  if test "$argv[1]" = "checkout"
     set -l __keyto_target (KEYTO_SHELL_INTEGRATION=1 command keyto $argv)
     or return $status
     if test -n "$__keyto_target" -a -d "$__keyto_target"

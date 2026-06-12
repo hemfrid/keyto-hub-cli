@@ -130,6 +130,19 @@ func TestDispatch_EnvSubcommand_Unknown(t *testing.T) {
 	}
 }
 
+func TestDispatch_CheckoutRoutesToRunCheckout(t *testing.T) {
+	called := false
+	orig := runCheckout
+	runCheckout = func(ctx context.Context, args []string) error { called = true; return nil }
+	t.Cleanup(func() { runCheckout = orig })
+	if err := dispatch([]string{"checkout"}); err != nil {
+		t.Fatalf("dispatch(checkout) returned error: %v", err)
+	}
+	if !called {
+		t.Fatal("dispatch did not route 'checkout' to runCheckout")
+	}
+}
+
 // TestDispatch_DevRoutesToRunDev ensures `keyto dev` routes to the runDev
 // package variable (similar to the runUpdate pattern), without running Docker.
 func TestDispatch_DevRoutesToRunDev(t *testing.T) {
