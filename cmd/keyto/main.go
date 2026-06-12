@@ -109,8 +109,11 @@ var runCheckout = func(ctx context.Context, args []string) error {
 // It loads creds (nil if not authed — checkout.Run returns a helpful error in
 // that case), builds the real Deps wrappers, and delegates to checkout.Run.
 func runCheckoutImpl(ctx context.Context, args []string) error {
-	if _, err := exec.LookPath("git"); err != nil {
-		return fmt.Errorf("git is required but was not found on PATH — install git and retry")
+	// checkout needs git; guide the install (consent-gated) rather than just
+	// erroring on a missing binary. AutoYes:false — checkout is interactive.
+	if err := prereq.Ensure(ctx, []prereq.Tool{prereq.Git},
+		prereq.Opts{Deps: realPrereqDeps(ctx), AutoYes: false}); err != nil {
+		return err
 	}
 
 	creds, err := config.Load()
@@ -179,7 +182,37 @@ func runCheckoutImpl(ctx context.Context, args []string) error {
 		return err
 	}
 	emitProjectDir(projectDir)
+	// Non-blocking heads-up: `keyto start` will also need Docker + Node 20.
+	// Detect-only here — never install or block during checkout.
+	if tip := startPrereqTip(realPrereqDeps(ctx)); tip != "" {
+		fmt.Fprintln(os.Stderr, tip)
+	}
 	return nil
+}
+
+// startPrereqTip detects (without installing or blocking) whether Docker and a
+// supported Node are present and returns a one-line heads-up for `keyto start`.
+// Returns "" when both are already satisfied. Detect-only: it must never mutate
+// the machine or fail the checkout. Takes prereq.Deps so it's unit-testable.
+func startPrereqTip(deps prereq.Deps) string {
+	var missing []string
+	if !deps.HasCommand("docker") {
+		missing = append(missing, "Docker")
+	}
+	if v, err := deps.Version("node"); err != nil || !deps.HasCommand("node") || !nodeVersionTipOK(v) {
+		missing = append(missing, "Node 20")
+	}
+	if len(missing) == 0 {
+		return ""
+	}
+	return fmt.Sprintf("tip: `keyto start` will also need Docker + Node 20 — missing: %s (run `keyto start` to install)", strings.Join(missing, ", "))
+}
+
+// nodeVersionTipOK is the detect-only Node-20 check used by the checkout
+// heads-up. It accepts v20.x and is deliberately lenient (a heads-up, not a
+// gate): `keyto start`'s prereq.Ensure does the authoritative >=20.9 <21 check.
+func nodeVersionTipOK(v string) bool {
+	return strings.HasPrefix(strings.TrimSpace(v), "v20.") || strings.HasPrefix(strings.TrimSpace(v), "20.")
 }
 
 // readMarker reads the keyto project marker from dir. It is a package var so
@@ -260,9 +293,20 @@ func runBootImpl(ctx context.Context, args []string) error {
 			return readPackageScripts(cwd)
 		},
 		EnsurePrereqs: func(ctx context.Context) error {
-			return prereq.Ensure(ctx,
-				[]prereq.Tool{prereq.Git, prereq.Docker, prereq.Node},
-				prereq.Opts{Deps: realPrereqDeps(ctx), AutoYes: flags.Yes})
+			deps := realPrereqDeps(ctx)
+			// start runs `docker compose up`, so the Compose v2 plugin is a
+			// hard prerequisite alongside the docker engine itself.
+			if err := prereq.Ensure(ctx,
+				[]prereq.Tool{prereq.Git, prereq.Docker, prereq.DockerCompose, prereq.Node},
+				prereq.Opts{Deps: deps, AutoYes: flags.Yes}); err != nil {
+				return err
+			}
+			// Non-fatal Linux advisory: a low inotify watch limit makes
+			// `next dev` hot reload fail with ENOSPC. Print and continue.
+			if w := (prereq.Opts{Deps: deps}).InotifyWarning(os.ReadFile); w != "" {
+				fmt.Fprintln(os.Stderr, w)
+			}
+			return nil
 		},
 		EnvSync:       func(ctx context.Context) error { return runEnvSync(ctx, nil) },
 		EnvFileExists: func() bool { return fileExists(filepath.Join(cwd, ".env")) },
@@ -298,6 +342,9 @@ func realPrereqDeps(ctx context.Context) prereq.Deps {
 		},
 		DaemonUp: func(ctx context.Context) bool {
 			return exec.CommandContext(ctx, "docker", "info").Run() == nil
+		},
+		ComposeOK: func(ctx context.Context) bool {
+			return exec.CommandContext(ctx, "docker", "compose", "version").Run() == nil
 		},
 		Prompt: promptYesNo,
 		Run: func(ctx context.Context, name string, args ...string) error {

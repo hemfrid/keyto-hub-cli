@@ -11,6 +11,7 @@ import (
 	"io"
 	"regexp"
 	"strconv"
+	"strings"
 )
 
 type Tool int
@@ -18,6 +19,10 @@ type Tool int
 const (
 	Git Tool = iota
 	Docker
+	// DockerCompose is the Compose v2 plugin (`docker compose`), which is
+	// separate from the `docker` binary — a machine can have the engine but
+	// lack the plugin. `keyto start` runs `docker compose up`, so it needs both.
+	DockerCompose
 	Node
 )
 
@@ -27,6 +32,8 @@ func (t Tool) name() string {
 		return "git"
 	case Docker:
 		return "docker"
+	case DockerCompose:
+		return "docker compose"
 	case Node:
 		return "node"
 	}
@@ -46,6 +53,7 @@ type Deps struct {
 	HasCommand func(name string) bool            // exec.LookPath != nil
 	Version    func(name string) (string, error) // e.g. `node --version` -> "v20.20.2"
 	DaemonUp   func(ctx context.Context) bool    // `docker info` succeeds
+	ComposeOK  func(ctx context.Context) bool    // `docker compose version` exits 0
 	Prompt     func(question string) bool        // y/N consent (false on non-TTY unless AutoYes)
 	Run        func(ctx context.Context, name string, args ...string) error
 	Out        io.Writer
@@ -85,12 +93,59 @@ func ensureOne(ctx context.Context, t Tool, o Opts) error {
 			}
 			return o.dockerDaemonDown(ctx)
 		}
+	case DockerCompose:
+		// The Compose v2 plugin lives inside docker. If the docker binary is
+		// missing we let the Docker tool report that (start lists Docker first);
+		// don't duplicate the "install docker" error here.
+		if !o.HasCommand("docker") {
+			return nil
+		}
+		// The daemon being down is a Docker concern, not a Compose-plugin one —
+		// `docker compose version` answers "is the plugin installed?" without a
+		// running daemon. Trust the seam.
+		if o.ComposeOK(ctx) {
+			return nil
+		}
+		return o.composeMissing()
 	default: // Git
 		if o.HasCommand(t.name()) {
 			return nil
 		}
 	}
 	return o.install(ctx, t)
+}
+
+// inotifyMinWatches is the floor below which `next dev`'s file watcher tends to
+// hit ENOSPC ("System limit for number of file watchers reached") on Linux. The
+// suggested fix raises the limit well above this.
+const (
+	inotifyMinWatches         = 65536
+	inotifyWatchesPath        = "/proc/sys/fs/inotify/max_user_watches"
+	inotifyRecommendedWatches = 524288
+)
+
+// InotifyWarning returns a non-empty advisory string when the Linux inotify
+// watch limit is too low for `next dev`'s hot reload, and "" otherwise (limit
+// healthy, non-Linux, or the value couldn't be read/parsed). readFile is
+// injected (real impl: os.ReadFile of inotifyWatchesPath) so the threshold
+// logic is unit-testable. It is purely advisory — the caller prints it and
+// never blocks on it.
+func (o Opts) InotifyWarning(readFile func(path string) ([]byte, error)) string {
+	if o.OS != "linux" {
+		return ""
+	}
+	data, err := readFile(inotifyWatchesPath)
+	if err != nil {
+		return "" // can't read it → stay silent rather than nag
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(string(data)))
+	if err != nil {
+		return ""
+	}
+	if n >= inotifyMinWatches {
+		return ""
+	}
+	return fmt.Sprintf("note: fs.inotify.max_user_watches is %d (low) — `next dev` hot reload may fail with ENOSPC. Raise it with:\n    sudo sysctl fs.inotify.max_user_watches=%d", n, inotifyRecommendedWatches)
 }
 
 // nodeVersionRe extracts major.minor from `node --version` output (e.g. "v20.20.2").
@@ -142,7 +197,15 @@ func (o Opts) installMethod(t Tool) (desc string, cmd []string, auto bool) {
 		case Docker:
 			return "Docker Engine (get.docker.com)", []string{"sh", "-c", "curl -fsSL https://get.docker.com | sh"}, true
 		case Node:
-			return mgr + " install nodejs (v20)", append(o.sudo(), mgr, "install", "-y", "nodejs"), true
+			// Distro `apt/dnf install nodejs` usually lands a Node older than
+			// 20, which keyto rejects. Use the NodeSource v20 setup script on
+			// apt-based distros; on dnf, point at NodeSource's rpm setup too.
+			if mgr == "apt-get" {
+				return "Node 20 via NodeSource (deb.nodesource.com)",
+					[]string{"sh", "-c", "curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash - && sudo apt-get install -y nodejs"}, true
+			}
+			return "Node 20 via NodeSource (rpm.nodesource.com)",
+				[]string{"sh", "-c", "curl -fsSL https://rpm.nodesource.com/setup_20.x | sudo -E bash - && sudo " + mgr + " install -y nodejs"}, true
 		}
 	}
 	// windows + anything unmatched: instruct only.
@@ -212,4 +275,25 @@ func (o Opts) dockerDaemonDown(ctx context.Context) error {
 		}
 	}
 	return fmt.Errorf("the Docker daemon is not running — start Docker Desktop (or `colima start`) and re-run")
+}
+
+// composeMissing returns OS-specific guidance for installing the Compose v2
+// plugin when `docker` is present but `docker compose` is not. The plugin is
+// not safely auto-installable (it's bundled with the engine/Desktop or shipped
+// as a distro package), so we instruct rather than mutate.
+func (o Opts) composeMissing() error {
+	var fix string
+	switch o.OS {
+	case "darwin":
+		fix = "brew install docker-compose (or reinstall Docker Desktop, which bundles it)"
+	case "linux":
+		if mgr := o.linuxMgr(); mgr != "" {
+			fix = mgr + " install -y docker-compose-plugin (or reinstall via https://get.docker.com, which includes the plugin)"
+		} else {
+			fix = "install the docker-compose-plugin package for your distro (or reinstall via https://get.docker.com)"
+		}
+	default: // windows + unmatched
+		fix = "reinstall Docker Desktop (it bundles the compose plugin)"
+	}
+	return fmt.Errorf("docker is installed but the Compose v2 plugin (`docker compose`) is missing — keyto start runs `docker compose up`. Install it and re-run:\n    %s", fix)
 }

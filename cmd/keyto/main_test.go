@@ -14,8 +14,87 @@ import (
 	"github.com/hemfrid/keyto-hub-cli/internal/config"
 	"github.com/hemfrid/keyto-hub-cli/internal/envsync"
 	"github.com/hemfrid/keyto-hub-cli/internal/hub"
+	"github.com/hemfrid/keyto-hub-cli/internal/prereq"
 	"github.com/hemfrid/keyto-hub-cli/internal/project"
 )
+
+// tipDeps builds a prereq.Deps with scripted detection for startPrereqTip tests.
+// present maps command name → version string (also reported by Version).
+func tipDeps(present map[string]string) prereq.Deps {
+	return prereq.Deps{
+		HasCommand: func(name string) bool { _, ok := present[name]; return ok },
+		Version:    func(name string) (string, error) { return present[name], nil },
+	}
+}
+
+func TestStartPrereqTip(t *testing.T) {
+	cases := []struct {
+		name        string
+		present     map[string]string
+		wantEmpty   bool
+		wantMissing []string
+	}{
+		{
+			name:      "docker and node20 present → no tip",
+			present:   map[string]string{"docker": "27", "node": "v20.11.0"},
+			wantEmpty: true,
+		},
+		{
+			name:        "docker missing → tip names Docker",
+			present:     map[string]string{"node": "v20.11.0"},
+			wantMissing: []string{"Docker"},
+		},
+		{
+			name:        "node missing → tip names Node 20",
+			present:     map[string]string{"docker": "27"},
+			wantMissing: []string{"Node 20"},
+		},
+		{
+			name:        "node too old → tip names Node 20",
+			present:     map[string]string{"docker": "27", "node": "v18.19.0"},
+			wantMissing: []string{"Node 20"},
+		},
+		{
+			name:        "both missing → tip names both",
+			present:     map[string]string{},
+			wantMissing: []string{"Docker", "Node 20"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := startPrereqTip(tipDeps(tc.present))
+			if tc.wantEmpty {
+				if got != "" {
+					t.Fatalf("expected no tip, got: %q", got)
+				}
+				return
+			}
+			if got == "" {
+				t.Fatalf("expected a tip naming %v, got empty", tc.wantMissing)
+			}
+			for _, m := range tc.wantMissing {
+				if !strings.Contains(got, m) {
+					t.Errorf("tip %q missing expected token %q", got, m)
+				}
+			}
+		})
+	}
+}
+
+func TestNodeVersionTipOK(t *testing.T) {
+	ok := []string{"v20.0.0", "v20.11.0", "20.9.0"}
+	notOK := []string{"v18.19.0", "v21.0.0", "v19.9.0", "", "garbage"}
+	for _, v := range ok {
+		if !nodeVersionTipOK(v) {
+			t.Errorf("nodeVersionTipOK(%q) = false, want true", v)
+		}
+	}
+	for _, v := range notOK {
+		if nodeVersionTipOK(v) {
+			t.Errorf("nodeVersionTipOK(%q) = true, want false", v)
+		}
+	}
+}
 
 // reuseCredential decides whether `keyto auth` should reuse an existing
 // credential instead of minting a new CLI token on the Hub.
