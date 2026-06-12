@@ -1,6 +1,6 @@
-// Package start implements the `keyto start` command: project resolution,
+// Package checkout implements the `keyto checkout` command: project resolution,
 // clone via the Hub git proxy, and git wiring.
-package start
+package checkout
 
 import (
 	"bufio"
@@ -57,7 +57,7 @@ type session struct {
 	in *bufio.Reader
 }
 
-// Run implements `keyto start [project]`. On success it returns the resolved
+// Run implements `keyto checkout [project]`. On success it returns the resolved
 // project directory (the clone dir, or the cwd when re-wiring in place) so the
 // caller can cd into it under shell integration. The returned dir is empty when
 // no project was resolved (e.g. an empty project list).

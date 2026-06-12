@@ -1,4 +1,4 @@
-package start_test
+package checkout_test
 
 import (
 	"bytes"
@@ -7,10 +7,10 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/hemfrid/keyto-hub-cli/internal/checkout"
 	"github.com/hemfrid/keyto-hub-cli/internal/config"
 	"github.com/hemfrid/keyto-hub-cli/internal/hub"
 	"github.com/hemfrid/keyto-hub-cli/internal/project"
-	"github.com/hemfrid/keyto-hub-cli/internal/start"
 )
 
 // ---- fake helpers ----
@@ -51,7 +51,7 @@ func twoProjects() []hub.Project {
 // T1: nil creds → error mentioning keyto auth; no clone called.
 func TestRun_NilCreds_ReturnsAuthError(t *testing.T) {
 	cloneCalled := false
-	d := start.Deps{
+	d := checkout.Deps{
 		Creds:       nil,
 		List:        fakeList(twoProjects()),
 		Clone:       func(repoURL, dir string) error { cloneCalled = true; return nil },
@@ -63,7 +63,7 @@ func TestRun_NilCreds_ReturnsAuthError(t *testing.T) {
 		Out:         &bytes.Buffer{},
 	}
 
-	_, err := start.Run(context.Background(), "", d)
+	_, err := checkout.Run(context.Background(), "", d)
 	if err == nil {
 		t.Fatal("expected error for nil creds, got nil")
 	}
@@ -86,7 +86,7 @@ func TestRun_ProjectArg_CwdMarkerMatches_RewiresInPlace(t *testing.T) {
 		HubURL: "https://hub.example.com",
 	}
 
-	d := start.Deps{
+	d := checkout.Deps{
 		Creds: makeCreds(),
 		List:  fakeList(twoProjects()),
 		Clone: func(repoURL, dir string) error { cloneCalled = true; return nil },
@@ -101,7 +101,7 @@ func TestRun_ProjectArg_CwdMarkerMatches_RewiresInPlace(t *testing.T) {
 		Out:         &bytes.Buffer{},
 	}
 
-	_, err := start.Run(context.Background(), "acme-web", d)
+	_, err := checkout.Run(context.Background(), "acme-web", d)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -119,7 +119,7 @@ func TestRun_ProjectArg_NotInCwd_ClonesWithCorrectURL(t *testing.T) {
 	var wiredDir string
 	var wroteMarker bool
 
-	d := start.Deps{
+	d := checkout.Deps{
 		Creds: makeCreds(),
 		List:  fakeList(twoProjects()),
 		Clone: func(repoURL, dir string) error {
@@ -142,7 +142,7 @@ func TestRun_ProjectArg_NotInCwd_ClonesWithCorrectURL(t *testing.T) {
 		Out: &bytes.Buffer{},
 	}
 
-	_, err := start.Run(context.Background(), "acme-web", d)
+	_, err := checkout.Run(context.Background(), "acme-web", d)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -167,7 +167,7 @@ func TestRun_ProjectArg_NotInCwd_ClonesWithCorrectURL(t *testing.T) {
 func TestRun_ProjectArg_CustomDir_UsedForClone(t *testing.T) {
 	var clonedDir string
 
-	d := start.Deps{
+	d := checkout.Deps{
 		Creds:       makeCreds(),
 		List:        fakeList(twoProjects()),
 		Clone:       func(repoURL, dir string) error { clonedDir = dir; return nil },
@@ -179,7 +179,7 @@ func TestRun_ProjectArg_CustomDir_UsedForClone(t *testing.T) {
 		Out:         &bytes.Buffer{},
 	}
 
-	_, err := start.Run(context.Background(), "acme-web", d)
+	_, err := checkout.Run(context.Background(), "acme-web", d)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -192,7 +192,7 @@ func TestRun_ProjectArg_CustomDir_UsedForClone(t *testing.T) {
 func TestRun_ProjectArg_NotMember_Error(t *testing.T) {
 	cloneCalled := false
 
-	d := start.Deps{
+	d := checkout.Deps{
 		Creds:       makeCreds(),
 		List:        fakeList(twoProjects()),
 		Clone:       func(repoURL, dir string) error { cloneCalled = true; return nil },
@@ -204,7 +204,7 @@ func TestRun_ProjectArg_NotMember_Error(t *testing.T) {
 		Out:         &bytes.Buffer{},
 	}
 
-	_, err := start.Run(context.Background(), "nonexistent-project", d)
+	_, err := checkout.Run(context.Background(), "nonexistent-project", d)
 	if err == nil {
 		t.Fatal("expected error when project not found, got nil")
 	}
@@ -224,7 +224,7 @@ func TestRun_NoArg_CwdMarker_PromptYes_RewiresInPlace(t *testing.T) {
 		HubURL: "https://hub.example.com",
 	}
 
-	d := start.Deps{
+	d := checkout.Deps{
 		Creds: makeCreds(),
 		List:  fakeList(twoProjects()),
 		Clone: func(repoURL, dir string) error { cloneCalled = true; return nil },
@@ -239,7 +239,7 @@ func TestRun_NoArg_CwdMarker_PromptYes_RewiresInPlace(t *testing.T) {
 		Out:         &bytes.Buffer{},
 	}
 
-	_, err := start.Run(context.Background(), "", d)
+	_, err := checkout.Run(context.Background(), "", d)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -261,7 +261,7 @@ func TestRun_NoArg_CwdMarker_PromptNo_FallsToPicker(t *testing.T) {
 		HubURL: "https://hub.example.com",
 	}
 
-	d := start.Deps{
+	d := checkout.Deps{
 		Creds:       makeCreds(),
 		List:        fakeList(twoProjects()),
 		Clone:       func(repoURL, dir string) error { cloneCalled = true; return nil },
@@ -274,7 +274,7 @@ func TestRun_NoArg_CwdMarker_PromptNo_FallsToPicker(t *testing.T) {
 		Out: &bytes.Buffer{},
 	}
 
-	_, err := start.Run(context.Background(), "", d)
+	_, err := checkout.Run(context.Background(), "", d)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -287,7 +287,7 @@ func TestRun_NoArg_CwdMarker_PromptNo_FallsToPicker(t *testing.T) {
 func TestRun_NoArg_NoCwdMarker_Picker_ClonesSelected(t *testing.T) {
 	var clonedURL string
 
-	d := start.Deps{
+	d := checkout.Deps{
 		Creds: makeCreds(),
 		List:  fakeList(twoProjects()),
 		Clone: func(repoURL, dir string) error {
@@ -303,7 +303,7 @@ func TestRun_NoArg_NoCwdMarker_Picker_ClonesSelected(t *testing.T) {
 		Out: &bytes.Buffer{},
 	}
 
-	_, err := start.Run(context.Background(), "", d)
+	_, err := checkout.Run(context.Background(), "", d)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -319,7 +319,7 @@ func TestRun_NoArg_EmptyList_GracefulMessage(t *testing.T) {
 	cloneCalled := false
 	var out bytes.Buffer
 
-	d := start.Deps{
+	d := checkout.Deps{
 		Creds:       makeCreds(),
 		List:        fakeList([]hub.Project{}),
 		Clone:       func(repoURL, dir string) error { cloneCalled = true; return nil },
@@ -331,7 +331,7 @@ func TestRun_NoArg_EmptyList_GracefulMessage(t *testing.T) {
 		Out:         &out,
 	}
 
-	_, err := start.Run(context.Background(), "", d)
+	_, err := checkout.Run(context.Background(), "", d)
 	if err != nil {
 		t.Fatalf("unexpected error for empty list: %v", err)
 	}
@@ -347,7 +347,7 @@ func TestRun_NoArg_EmptyList_GracefulMessage(t *testing.T) {
 func TestRun_ListError_Propagated(t *testing.T) {
 	listErr := errors.New("network failure")
 
-	d := start.Deps{
+	d := checkout.Deps{
 		Creds: makeCreds(),
 		List: func(ctx context.Context) ([]hub.Project, error) {
 			return nil, listErr
@@ -361,7 +361,7 @@ func TestRun_ListError_Propagated(t *testing.T) {
 		Out:         &bytes.Buffer{},
 	}
 
-	_, err := start.Run(context.Background(), "", d)
+	_, err := checkout.Run(context.Background(), "", d)
 	if err == nil {
 		t.Fatal("expected error from List, got nil")
 	}
@@ -380,7 +380,7 @@ func TestRun_WireError_Propagated(t *testing.T) {
 		HubURL: "https://hub.example.com",
 	}
 
-	d := start.Deps{
+	d := checkout.Deps{
 		Creds: makeCreds(),
 		List:  fakeList(twoProjects()),
 		Clone: noopClone,
@@ -394,7 +394,7 @@ func TestRun_WireError_Propagated(t *testing.T) {
 		Out:         &bytes.Buffer{},
 	}
 
-	_, err := start.Run(context.Background(), "acme-web", d)
+	_, err := checkout.Run(context.Background(), "acme-web", d)
 	if err == nil {
 		t.Fatal("expected error from Wire, got nil")
 	}
@@ -406,7 +406,7 @@ func TestRun_WireError_Propagated(t *testing.T) {
 // T12: the clone path returns the checkout directory (used by shell integration
 // to cd the calling shell into the project).
 func TestRun_ClonePath_ReturnsCheckoutDir(t *testing.T) {
-	d := start.Deps{
+	d := checkout.Deps{
 		Creds:       makeCreds(),
 		List:        fakeList(twoProjects()),
 		Clone:       noopClone,
@@ -418,7 +418,7 @@ func TestRun_ClonePath_ReturnsCheckoutDir(t *testing.T) {
 		Out:         &bytes.Buffer{},
 	}
 
-	dir, err := start.Run(context.Background(), "acme-web", d)
+	dir, err := checkout.Run(context.Background(), "acme-web", d)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -435,7 +435,7 @@ func TestRun_RewireInPlace_ReturnsCwd(t *testing.T) {
 		Repo:   "acme-web",
 		HubURL: "https://hub.example.com",
 	}
-	d := start.Deps{
+	d := checkout.Deps{
 		Creds:       makeCreds(),
 		List:        fakeList(twoProjects()),
 		Clone:       noopClone,
@@ -447,7 +447,7 @@ func TestRun_RewireInPlace_ReturnsCwd(t *testing.T) {
 		Out:         &bytes.Buffer{},
 	}
 
-	dir, err := start.Run(context.Background(), "acme-web", d)
+	dir, err := checkout.Run(context.Background(), "acme-web", d)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -458,7 +458,7 @@ func TestRun_RewireInPlace_ReturnsCwd(t *testing.T) {
 
 // T14: an empty project list resolves no project → empty dir, no error.
 func TestRun_EmptyList_ReturnsEmptyDir(t *testing.T) {
-	d := start.Deps{
+	d := checkout.Deps{
 		Creds:       makeCreds(),
 		List:        fakeList([]hub.Project{}),
 		Clone:       noopClone,
@@ -470,7 +470,7 @@ func TestRun_EmptyList_ReturnsEmptyDir(t *testing.T) {
 		Out:         &bytes.Buffer{},
 	}
 
-	dir, err := start.Run(context.Background(), "", d)
+	dir, err := checkout.Run(context.Background(), "", d)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

@@ -12,6 +12,7 @@ import (
 
 	"github.com/hemfrid/keyto-hub-cli/internal/auth"
 	"github.com/hemfrid/keyto-hub-cli/internal/browser"
+	"github.com/hemfrid/keyto-hub-cli/internal/checkout"
 	"github.com/hemfrid/keyto-hub-cli/internal/config"
 	"github.com/hemfrid/keyto-hub-cli/internal/credential"
 	"github.com/hemfrid/keyto-hub-cli/internal/envsync"
@@ -20,7 +21,6 @@ import (
 	"github.com/hemfrid/keyto-hub-cli/internal/project"
 	"github.com/hemfrid/keyto-hub-cli/internal/selfupdate"
 	"github.com/hemfrid/keyto-hub-cli/internal/shellinit"
-	"github.com/hemfrid/keyto-hub-cli/internal/start"
 	"github.com/hemfrid/keyto-hub-cli/internal/ui"
 )
 
@@ -64,12 +64,18 @@ func dispatch(args []string) error {
 	case "auth":
 		selfupdate.MaybeNotify(version, ui.IsStderrTTY(), os.Stderr)
 		return runAuth(args[1:])
-	case "start":
+	case "checkout":
 		// Banner + all interactive output go to stderr so stdout stays clean
 		// for shell integration (which captures the resolved project dir).
 		ui.Banner(os.Stderr, ui.IsStderrTTY(), ui.TermWidth(), false, version)
 		selfupdate.MaybeNotify(version, ui.IsStderrTTY(), os.Stderr)
-		return runStart(context.Background(), args[1:])
+		return runCheckout(context.Background(), args[1:])
+	case "start":
+		// start will become a foreground boot loop (Chunk 5) whose stdout must
+		// stream; delegate to checkout for now so existing users are not broken.
+		ui.Banner(os.Stderr, ui.IsStderrTTY(), ui.TermWidth(), false, version)
+		selfupdate.MaybeNotify(version, ui.IsStderrTTY(), os.Stderr)
+		return runCheckout(context.Background(), args[1:])
 	case "update":
 		return runUpdate()
 	case "shell-init":
@@ -85,10 +91,16 @@ func dispatch(args []string) error {
 	}
 }
 
-// runStart implements `keyto start [project]`.
-// It loads creds (nil if not authed — start.Run returns a helpful error in that
-// case), builds the real Deps wrappers, and delegates to start.Run.
-func runStart(ctx context.Context, args []string) error {
+// runCheckout is a package var so dispatch routing can be tested without
+// performing a real clone or network call.
+var runCheckout = func(ctx context.Context, args []string) error {
+	return runCheckoutImpl(ctx, args)
+}
+
+// runCheckoutImpl implements `keyto checkout [project]`.
+// It loads creds (nil if not authed — checkout.Run returns a helpful error in
+// that case), builds the real Deps wrappers, and delegates to checkout.Run.
+func runCheckoutImpl(ctx context.Context, args []string) error {
 	if _, err := exec.LookPath("git"); err != nil {
 		return fmt.Errorf("git is required but was not found on PATH — install git and retry")
 	}
@@ -96,9 +108,9 @@ func runStart(ctx context.Context, args []string) error {
 	creds, err := config.Load()
 	if err != nil {
 		if errors.Is(err, config.ErrNotAuthed) {
-			creds = nil // start.Run will return the helpful "run keyto auth" error
+			creds = nil // checkout.Run will return the helpful "run keyto auth" error
 		} else {
-			return fmt.Errorf("start: load config: %w", err)
+			return fmt.Errorf("checkout: load config: %w", err)
 		}
 	}
 
@@ -118,7 +130,7 @@ func runStart(ctx context.Context, args []string) error {
 
 	cwd, err := os.Getwd()
 	if err != nil {
-		return fmt.Errorf("start: get working directory: %w", err)
+		return fmt.Errorf("checkout: get working directory: %w", err)
 	}
 
 	projectArg := ""
@@ -126,7 +138,7 @@ func runStart(ctx context.Context, args []string) error {
 		projectArg = args[0]
 	}
 
-	d := start.Deps{
+	d := checkout.Deps{
 		Creds: creds,
 		List: func(ctx context.Context) ([]hub.Project, error) {
 			if hubClient == nil {
@@ -154,7 +166,7 @@ func runStart(ctx context.Context, args []string) error {
 		Out:         os.Stderr,
 	}
 
-	projectDir, err := start.Run(ctx, projectArg, d)
+	projectDir, err := checkout.Run(ctx, projectArg, d)
 	if err != nil {
 		return err
 	}
