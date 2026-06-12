@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -11,6 +13,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/hemfrid/keyto-hub-cli/internal/auth"
+	"github.com/hemfrid/keyto-hub-cli/internal/boot"
+	"github.com/hemfrid/keyto-hub-cli/internal/checkout"
 	"github.com/hemfrid/keyto-hub-cli/internal/config"
 	"github.com/hemfrid/keyto-hub-cli/internal/envsync"
 	"github.com/hemfrid/keyto-hub-cli/internal/hub"
@@ -372,5 +377,327 @@ func TestRunEnvSync_Integration(t *testing.T) {
 	}
 	if !strings.Contains(content, "# DEV_USER_EMAIL=") {
 		t.Errorf("integration: .env missing placeholder comment; got:\n%s", content)
+	}
+}
+
+// TestIsAuthError verifies the 401/Unauthorized classifier used to trigger the
+// automatic re-auth retry.
+func TestIsAuthError(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"nil error", nil, false},
+		{"401 status string", fmt.Errorf("list-projects failed: 401 Unauthorized"), true},
+		{"lowercase unauthorized", errors.New("request rejected: unauthorized"), true},
+		{"bare 401 number", errors.New("got 401"), true},
+		{"unrelated error", errors.New("connection refused"), false},
+		{"403 is not auth-reauth", errors.New("forbidden: 403"), false},
+	}
+	for _, tc := range cases {
+		if got := isAuthError(tc.err); got != tc.want {
+			t.Errorf("%s: isAuthError(%v) = %v, want %v", tc.name, tc.err, got, tc.want)
+		}
+	}
+}
+
+// reauthStubs swaps the reauth seam for a fake that returns the supplied creds
+// (and counts calls) so the auto-reauth retry path can be asserted without
+// launching a real browser. It also points KEYTO_HOME at a temp dir so any
+// config.Load inside the command under test is hermetic.
+func reauthStubs(t *testing.T, minted *config.Creds) *int {
+	t.Helper()
+	t.Setenv("KEYTO_HOME", t.TempDir())
+	calls := 0
+	orig := reauth
+	reauth = func(ctx context.Context) (*config.Creds, error) {
+		calls++
+		return minted, nil
+	}
+	t.Cleanup(func() { reauth = orig })
+	return &calls
+}
+
+func mintedCreds() *config.Creds {
+	return &config.Creds{
+		Credential: "tok_reauthed",
+		HubURL:     "https://hub.keytolabs.com",
+		UserEmail:  "alice@keytogroup.com",
+		UserName:   "Alice",
+		ExpiresAt:  time.Now().Add(24 * time.Hour),
+	}
+}
+
+// validCreds writes a non-expired credential to KEYTO_HOME so the command under
+// test does NOT re-auth up front (it must reach the run + 401 path).
+func validCreds(t *testing.T) {
+	t.Helper()
+	if err := config.Save(&config.Creds{
+		Credential: "tok_valid",
+		HubURL:     "https://hub.keytolabs.com",
+		UserEmail:  "alice@keytogroup.com",
+		UserName:   "Alice",
+		ExpiresAt:  time.Now().Add(24 * time.Hour),
+	}); err != nil {
+		t.Fatalf("seed valid creds: %v", err)
+	}
+}
+
+func TestCheckout_NoError_NoReauth(t *testing.T) {
+	reauthCalls := reauthStubs(t, mintedCreds())
+	validCreds(t)
+
+	runs := 0
+	orig := checkoutRun
+	checkoutRun = func(ctx context.Context, arg string, d checkout.Deps) (string, error) {
+		runs++
+		return "/tmp/demo", nil
+	}
+	t.Cleanup(func() { checkoutRun = orig })
+
+	if err := runCheckoutImpl(context.Background(), []string{"demo"}); err != nil {
+		t.Fatalf("runCheckoutImpl error: %v", err)
+	}
+	if runs != 1 {
+		t.Errorf("checkoutRun called %d times, want 1", runs)
+	}
+	if *reauthCalls != 0 {
+		t.Errorf("reauth called %d times, want 0", *reauthCalls)
+	}
+}
+
+func TestCheckout_AuthError_ReauthsAndRetriesOnce(t *testing.T) {
+	reauthCalls := reauthStubs(t, mintedCreds())
+	validCreds(t)
+
+	runs := 0
+	orig := checkoutRun
+	checkoutRun = func(ctx context.Context, arg string, d checkout.Deps) (string, error) {
+		runs++
+		if runs == 1 {
+			return "", fmt.Errorf("list-projects failed: 401 Unauthorized")
+		}
+		// Retry must use the freshly-minted credential.
+		if d.Creds == nil || d.Creds.Credential != "tok_reauthed" {
+			t.Errorf("retry did not use minted creds; got %+v", d.Creds)
+		}
+		return "/tmp/demo", nil
+	}
+	t.Cleanup(func() { checkoutRun = orig })
+
+	if err := runCheckoutImpl(context.Background(), []string{"demo"}); err != nil {
+		t.Fatalf("runCheckoutImpl error: %v", err)
+	}
+	if runs != 2 {
+		t.Errorf("checkoutRun called %d times, want 2 (run + retry)", runs)
+	}
+	if *reauthCalls != 1 {
+		t.Errorf("reauth called %d times, want 1", *reauthCalls)
+	}
+}
+
+func TestCheckout_PersistentAuthError_ReauthsOnceRunsTwiceReturnsError(t *testing.T) {
+	reauthCalls := reauthStubs(t, mintedCreds())
+	validCreds(t)
+
+	runs := 0
+	orig := checkoutRun
+	checkoutRun = func(ctx context.Context, arg string, d checkout.Deps) (string, error) {
+		runs++
+		return "", fmt.Errorf("list-projects failed: 401 Unauthorized")
+	}
+	t.Cleanup(func() { checkoutRun = orig })
+
+	err := runCheckoutImpl(context.Background(), []string{"demo"})
+	if err == nil {
+		t.Fatal("expected the persistent 401 to be returned, got nil")
+	}
+	if !isAuthError(err) {
+		t.Errorf("expected the returned error to still be an auth error, got: %v", err)
+	}
+	if runs != 2 {
+		t.Errorf("checkoutRun called %d times, want exactly 2 (no infinite re-auth loop)", runs)
+	}
+	if *reauthCalls != 1 {
+		t.Errorf("reauth called %d times, want exactly 1 (single retry)", *reauthCalls)
+	}
+}
+
+func TestCheckout_NilCreds_ReauthsUpFront(t *testing.T) {
+	// KEYTO_HOME is an empty temp dir → config.Load returns ErrNotAuthed → nil
+	// creds → reauth up front, before the run.
+	reauthCalls := reauthStubs(t, mintedCreds())
+
+	runs := 0
+	orig := checkoutRun
+	checkoutRun = func(ctx context.Context, arg string, d checkout.Deps) (string, error) {
+		runs++
+		if d.Creds == nil || d.Creds.Credential != "tok_reauthed" {
+			t.Errorf("run did not receive up-front-minted creds; got %+v", d.Creds)
+		}
+		return "/tmp/demo", nil
+	}
+	t.Cleanup(func() { checkoutRun = orig })
+
+	if err := runCheckoutImpl(context.Background(), []string{"demo"}); err != nil {
+		t.Fatalf("runCheckoutImpl error: %v", err)
+	}
+	if *reauthCalls != 1 {
+		t.Errorf("reauth called %d times, want 1 (up front)", *reauthCalls)
+	}
+	if runs != 1 {
+		t.Errorf("checkoutRun called %d times, want 1", runs)
+	}
+}
+
+func TestCheckout_ExpiredCreds_ReauthsUpFront(t *testing.T) {
+	reauthCalls := reauthStubs(t, mintedCreds())
+	// Seed an EXPIRED credential so the up-front guard fires.
+	if err := config.Save(&config.Creds{
+		Credential: "tok_expired",
+		HubURL:     "https://hub.keytolabs.com",
+		ExpiresAt:  time.Now().Add(-time.Hour),
+	}); err != nil {
+		t.Fatalf("seed expired creds: %v", err)
+	}
+
+	runs := 0
+	orig := checkoutRun
+	checkoutRun = func(ctx context.Context, arg string, d checkout.Deps) (string, error) {
+		runs++
+		if d.Creds == nil || d.Creds.Credential != "tok_reauthed" {
+			t.Errorf("run did not receive up-front-minted creds; got %+v", d.Creds)
+		}
+		return "/tmp/demo", nil
+	}
+	t.Cleanup(func() { checkoutRun = orig })
+
+	if err := runCheckoutImpl(context.Background(), []string{"demo"}); err != nil {
+		t.Fatalf("runCheckoutImpl error: %v", err)
+	}
+	if *reauthCalls != 1 {
+		t.Errorf("reauth called %d times, want 1 (up front on expiry)", *reauthCalls)
+	}
+	if runs != 1 {
+		t.Errorf("checkoutRun called %d times, want 1", runs)
+	}
+}
+
+func TestBoot_NoError_NoReauth(t *testing.T) {
+	reauthCalls := reauthStubs(t, mintedCreds())
+	validCreds(t)
+
+	runs := 0
+	orig := bootRun
+	bootRun = func(ctx context.Context, d boot.Deps, f boot.Flags) error {
+		runs++
+		return nil
+	}
+	t.Cleanup(func() { bootRun = orig })
+
+	if err := runBootImpl(context.Background(), nil); err != nil {
+		t.Fatalf("runBootImpl error: %v", err)
+	}
+	if runs != 1 {
+		t.Errorf("bootRun called %d times, want 1", runs)
+	}
+	if *reauthCalls != 0 {
+		t.Errorf("reauth called %d times, want 0", *reauthCalls)
+	}
+}
+
+func TestBoot_AuthError_ReauthsAndRetriesOnce(t *testing.T) {
+	reauthCalls := reauthStubs(t, mintedCreds())
+	validCreds(t)
+
+	runs := 0
+	orig := bootRun
+	bootRun = func(ctx context.Context, d boot.Deps, f boot.Flags) error {
+		runs++
+		if runs == 1 {
+			return fmt.Errorf("fetch-env-values failed: 401 Unauthorized")
+		}
+		return nil
+	}
+	t.Cleanup(func() { bootRun = orig })
+
+	if err := runBootImpl(context.Background(), nil); err != nil {
+		t.Fatalf("runBootImpl error: %v", err)
+	}
+	if runs != 2 {
+		t.Errorf("bootRun called %d times, want 2 (run + retry)", runs)
+	}
+	if *reauthCalls != 1 {
+		t.Errorf("reauth called %d times, want 1", *reauthCalls)
+	}
+}
+
+func TestBoot_PersistentAuthError_ReauthsOnceRunsTwiceReturnsError(t *testing.T) {
+	reauthCalls := reauthStubs(t, mintedCreds())
+	validCreds(t)
+
+	runs := 0
+	orig := bootRun
+	bootRun = func(ctx context.Context, d boot.Deps, f boot.Flags) error {
+		runs++
+		return fmt.Errorf("fetch-env-values failed: 401 Unauthorized")
+	}
+	t.Cleanup(func() { bootRun = orig })
+
+	err := runBootImpl(context.Background(), nil)
+	if err == nil {
+		t.Fatal("expected the persistent 401 to be returned, got nil")
+	}
+	if !isAuthError(err) {
+		t.Errorf("expected the returned error to still be an auth error, got: %v", err)
+	}
+	if runs != 2 {
+		t.Errorf("bootRun called %d times, want exactly 2 (no infinite re-auth loop)", runs)
+	}
+	if *reauthCalls != 1 {
+		t.Errorf("reauth called %d times, want exactly 1 (single retry)", *reauthCalls)
+	}
+}
+
+// TestReauth_MintsAndSaves exercises the real reauth seam (with authRun stubbed
+// — NO real browser) and verifies it mints, persists, and returns fresh creds.
+func TestReauth_MintsAndSaves(t *testing.T) {
+	t.Setenv("KEYTO_HOME", t.TempDir())
+	t.Setenv("KEYTO_HUB_URL", "https://hub.keytolabs.com")
+
+	authCalls := 0
+	origAuth := authRun
+	authRun = func(ctx context.Context, opts auth.Options) (*hub.TokenResponse, error) {
+		authCalls++
+		if opts.OpenURL == nil {
+			t.Error("reauth must pass an OpenURL to auth.Run")
+		}
+		return &hub.TokenResponse{
+			Credential: "tok_fresh",
+			UserEmail:  "alice@keytogroup.com",
+			UserName:   "Alice",
+			ExpiresAt:  time.Now().Add(24 * time.Hour),
+		}, nil
+	}
+	t.Cleanup(func() { authRun = origAuth })
+
+	got, err := reauth(context.Background())
+	if err != nil {
+		t.Fatalf("reauth error: %v", err)
+	}
+	if authCalls != 1 {
+		t.Errorf("authRun called %d times, want 1", authCalls)
+	}
+	if got == nil || got.Credential != "tok_fresh" {
+		t.Fatalf("reauth returned %+v, want credential tok_fresh", got)
+	}
+	// It must have persisted the minted credential to disk.
+	saved, err := config.Load()
+	if err != nil {
+		t.Fatalf("config.Load after reauth: %v", err)
+	}
+	if saved.Credential != "tok_fresh" {
+		t.Errorf("saved credential = %q, want tok_fresh", saved.Credential)
 	}
 }
