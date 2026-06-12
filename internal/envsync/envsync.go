@@ -116,9 +116,9 @@ func buildContainerValue(key, service string, pg postgresParams, my mysqlParams)
 	case "postgres":
 		switch key {
 		case "DATABASE_URL":
-			return fmt.Sprintf("postgres://%s:%s@localhost:5432/%s", pg.User, pg.Password, pg.DB)
+			return fmt.Sprintf("postgres://%s:%s@127.0.0.1:5432/%s", pg.User, pg.Password, pg.DB)
 		case "PGHOST":
-			return "localhost"
+			return "127.0.0.1"
 		case "PGPORT":
 			return "5432"
 		case "PGUSER":
@@ -129,27 +129,27 @@ func buildContainerValue(key, service string, pg postgresParams, my mysqlParams)
 			return pg.DB
 		default:
 			// Unknown postgres key: return a placeholder URL
-			return fmt.Sprintf("postgres://%s:%s@localhost:5432/%s", pg.User, pg.Password, pg.DB)
+			return fmt.Sprintf("postgres://%s:%s@127.0.0.1:5432/%s", pg.User, pg.Password, pg.DB)
 		}
 	case "redis":
 		switch key {
 		case "REDIS_URL":
-			return "redis://localhost:6379"
+			return "redis://127.0.0.1:6379"
 		case "REDIS_HOST":
-			return "localhost"
+			return "127.0.0.1"
 		case "REDIS_PORT":
 			return "6379"
 		case "REDIS_PASSWORD":
 			return ""
 		default:
-			return "redis://localhost:6379"
+			return "redis://127.0.0.1:6379"
 		}
 	case "mysql":
 		switch key {
 		case "MYSQL_URL":
-			return fmt.Sprintf("mysql://%s:%s@localhost:3306/%s", my.User, my.Password, my.Database)
+			return fmt.Sprintf("mysql://%s:%s@127.0.0.1:3306/%s", my.User, my.Password, my.Database)
 		case "MYSQL_HOST":
-			return "localhost"
+			return "127.0.0.1"
 		case "MYSQL_USER":
 			return my.User
 		case "MYSQL_PASSWORD":
@@ -157,7 +157,7 @@ func buildContainerValue(key, service string, pg postgresParams, my mysqlParams)
 		case "MYSQL_DATABASE":
 			return my.Database
 		default:
-			return fmt.Sprintf("mysql://%s:%s@localhost:3306/%s", my.User, my.Password, my.Database)
+			return fmt.Sprintf("mysql://%s:%s@127.0.0.1:3306/%s", my.User, my.Password, my.Database)
 		}
 	default:
 		return ""

@@ -204,13 +204,13 @@ func TestRun_GoldenEnvFile_AllHintTypes(t *testing.T) {
 	if !strings.Contains(content, "DATABASE_URL=postgres://") {
 		t.Error(".env missing DATABASE_URL postgres URL")
 	}
-	if !strings.Contains(content, "@localhost:5432/") {
-		t.Error("DATABASE_URL should point at localhost:5432")
+	if !strings.Contains(content, "@127.0.0.1:5432/") {
+		t.Error("DATABASE_URL should point at 127.0.0.1:5432")
 	}
 
 	// Redis URL.
-	if !strings.Contains(content, "REDIS_URL=redis://localhost:6379") {
-		t.Errorf(".env missing REDIS_URL=redis://localhost:6379; content:\n%s", content)
+	if !strings.Contains(content, "REDIS_URL=redis://127.0.0.1:6379") {
+		t.Errorf(".env missing REDIS_URL=redis://127.0.0.1:6379; content:\n%s", content)
 	}
 
 	// UAT key with real value.
@@ -295,7 +295,7 @@ func TestRun_PrintFlag_WritesToOutNotFile(t *testing.T) {
 	}
 
 	// Output must go to Out.
-	if !strings.Contains(out.String(), "REDIS_URL=redis://localhost:6379") {
+	if !strings.Contains(out.String(), "REDIS_URL=redis://127.0.0.1:6379") {
 		t.Errorf("--print output missing REDIS_URL; got:\n%s", out.String())
 	}
 }
@@ -331,8 +331,8 @@ func TestContainerURLs_Postgres(t *testing.T) {
 	if !strings.Contains(content, "PGDATABASE=my_project") {
 		t.Errorf("PGDATABASE should be my_project; got:\n%s", content)
 	}
-	if !strings.Contains(content, "PGHOST=localhost") {
-		t.Errorf("PGHOST should be localhost; got:\n%s", content)
+	if !strings.Contains(content, "PGHOST=127.0.0.1") {
+		t.Errorf("PGHOST should be 127.0.0.1; got:\n%s", content)
 	}
 	if !strings.Contains(content, "PGPORT=5432") {
 		t.Errorf("PGPORT should be 5432; got:\n%s", content)
@@ -364,8 +364,8 @@ func TestContainerURLs_MySQL(t *testing.T) {
 	if !strings.Contains(content, "MYSQL_URL=mysql://") {
 		t.Errorf("missing MYSQL_URL; got:\n%s", content)
 	}
-	if !strings.Contains(content, "@localhost:3306/") {
-		t.Errorf("MYSQL_URL should point at localhost:3306; got:\n%s", content)
+	if !strings.Contains(content, "@127.0.0.1:3306/") {
+		t.Errorf("MYSQL_URL should point at 127.0.0.1:3306; got:\n%s", content)
 	}
 	if !strings.Contains(content, "MYSQL_DATABASE=shop") {
 		t.Errorf("MYSQL_DATABASE should be shop; got:\n%s", content)
