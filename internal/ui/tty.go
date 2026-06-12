@@ -19,6 +19,13 @@ func IsStderrTTY() bool {
 	return term.IsTerminal(int(os.Stderr.Fd()))
 }
 
+// IsStdinTTY reports whether stdin is an interactive terminal. Used to gate
+// y/N consent prompts: a non-interactive stdin means there is no human to
+// answer, so the prompt must decline rather than block.
+func IsStdinTTY() bool {
+	return term.IsTerminal(int(os.Stdin.Fd()))
+}
+
 // TermWidth returns the terminal width, trying stdout then stderr then the
 // COLUMNS env var, and falling back to a large default (assume wide) when
 // unknown. Checking stderr matters under shell integration, where stdout is a

@@ -1,0 +1,126 @@
+package boot
+
+import (
+	"bytes"
+	"context"
+	"errors"
+	"strings"
+	"testing"
+)
+
+func baseDeps(rec *[]string) Deps {
+	return Deps{
+		HasMarker: func() bool { return true },
+		Scripts: func() (map[string]string, error) {
+			return map[string]string{"dev": "next dev", "migrate": "tsx lib/migrate.ts"}, nil
+		},
+		EnsurePrereqs:      func(ctx context.Context) error { *rec = append(*rec, "prereq"); return nil },
+		EnvSync:            func(ctx context.Context) error { *rec = append(*rec, "envsync"); return nil },
+		EnvFileExists:      func() bool { return true },
+		HasCompose:         func() bool { return true },
+		ComposeUp:          func(ctx context.Context) error { *rec = append(*rec, "composeup"); return nil },
+		DBRunning:          func(ctx context.Context) bool { return true },
+		NodeModulesPresent: func() bool { return true },
+		Install:            func(ctx context.Context) error { *rec = append(*rec, "install"); return nil },
+		RunScript: func(ctx context.Context, script string) error {
+			*rec = append(*rec, "run:"+script)
+			return nil
+		},
+		Out: &bytes.Buffer{},
+	}
+}
+
+func TestRun_HappyPath_OrderedSteps(t *testing.T) {
+	var rec []string
+	if err := Run(context.Background(), baseDeps(&rec), Flags{}); err != nil {
+		t.Fatalf("unexpected: %v", err)
+	}
+	want := []string{"prereq", "envsync", "composeup", "run:migrate", "run:dev"}
+	if strings.Join(rec, ",") != strings.Join(want, ",") {
+		t.Fatalf("step order = %v, want %v", rec, want)
+	}
+}
+
+func TestRun_NoMarker_Errors(t *testing.T) {
+	var rec []string
+	d := baseDeps(&rec)
+	d.HasMarker = func() bool { return false }
+	if err := Run(context.Background(), d, Flags{}); err == nil || !strings.Contains(err.Error(), "checkout") {
+		t.Fatalf("want no-project error pointing at checkout, got %v", err)
+	}
+}
+
+func TestRun_NoSyncWithoutEnvFile_Errors(t *testing.T) {
+	var rec []string
+	d := baseDeps(&rec)
+	d.EnvFileExists = func() bool { return false }
+	if err := Run(context.Background(), d, Flags{NoSync: true}); err == nil || !strings.Contains(err.Error(), ".env") {
+		t.Fatalf("want .env guard error, got %v", err)
+	}
+}
+
+func TestRun_NoDB_SkipsMigrate(t *testing.T) {
+	var rec []string
+	d := baseDeps(&rec)
+	d.DBRunning = func(ctx context.Context) bool { return false }
+	_ = Run(context.Background(), d, Flags{})
+	for _, s := range rec {
+		if s == "run:migrate" {
+			t.Fatal("migrate must be skipped when no DB is running")
+		}
+	}
+}
+
+func TestRun_MigrateFails_FatalBeforeApp(t *testing.T) {
+	var rec []string
+	d := baseDeps(&rec)
+	d.RunScript = func(ctx context.Context, script string) error {
+		rec = append(rec, "run:"+script)
+		if script == "migrate" {
+			return errors.New("relation already exists")
+		}
+		return nil
+	}
+	err := Run(context.Background(), d, Flags{})
+	if err == nil {
+		t.Fatal("migrate failure must be fatal")
+	}
+	for _, s := range rec {
+		if s == "run:dev" {
+			t.Fatal("app must NOT start after a migrate failure")
+		}
+	}
+}
+
+func TestRun_NoInstallFlag_SkipsInstallButRunsApp(t *testing.T) {
+	var rec []string
+	d := baseDeps(&rec)
+	d.NodeModulesPresent = func() bool { return false }
+	_ = Run(context.Background(), d, Flags{NoInstall: true})
+	for _, s := range rec {
+		if s == "install" {
+			t.Fatal("--no-install must skip npm install")
+		}
+	}
+}
+
+func TestRun_MissingNodeModules_Installs(t *testing.T) {
+	var rec []string
+	d := baseDeps(&rec)
+	d.NodeModulesPresent = func() bool { return false }
+	if err := Run(context.Background(), d, Flags{}); err != nil {
+		t.Fatalf("unexpected: %v", err)
+	}
+	var installedBeforeDev bool
+	for _, s := range rec {
+		if s == "install" {
+			installedBeforeDev = true
+		}
+		if s == "run:dev" && !installedBeforeDev {
+			t.Fatal("install must run before the app when node_modules is absent")
+		}
+	}
+	if !installedBeforeDev {
+		t.Fatal("expected install to run when node_modules is absent")
+	}
+}
