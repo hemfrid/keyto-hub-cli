@@ -64,6 +64,16 @@ func Run(ctx context.Context, d Deps, f Flags) error {
 		}
 	}
 
+	// Install deps BEFORE migrate: `npm run migrate` runs tsx/drizzle from
+	// node_modules, which a fresh checkout doesn't have yet (else exit 127,
+	// "tsx: command not found").
+	if !f.NoInstall && !d.NodeModulesPresent() {
+		fmt.Fprintln(d.Out, "• installing dependencies…")
+		if err := d.Install(ctx); err != nil {
+			return fmt.Errorf("npm install: %w", err)
+		}
+	}
+
 	if _, hasMigrate := scripts["migrate"]; hasMigrate && !f.NoMigrate && d.DBRunning(ctx) {
 		fmt.Fprintln(d.Out, "• applying migrations…")
 		if err := d.RunScript(ctx, "migrate"); err != nil {
@@ -74,13 +84,6 @@ func Run(ctx context.Context, d Deps, f Flags) error {
 		}
 	} else {
 		fmt.Fprintln(d.Out, "• no migrations to run (no DB or no migrate script)")
-	}
-
-	if !f.NoInstall && !d.NodeModulesPresent() {
-		fmt.Fprintln(d.Out, "• installing dependencies…")
-		if err := d.Install(ctx); err != nil {
-			return fmt.Errorf("npm install: %w", err)
-		}
 	}
 
 	fmt.Fprintln(d.Out, "• starting the app (npm run dev) — Ctrl-C to stop. Backing services stay up; `docker compose down` to stop them.")
