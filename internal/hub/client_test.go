@@ -330,3 +330,124 @@ func TestFetchEnvValues_ContextCancellation(t *testing.T) {
 		t.Fatal("expected error on cancelled context, got nil")
 	}
 }
+
+// ---- PostDiagnostics ----
+
+func TestPostDiagnostics_Success(t *testing.T) {
+	var gotMethod, gotPath, gotAuth, gotContentType string
+	var gotBody map[string]interface{}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod = r.Method
+		gotPath = r.URL.Path
+		gotAuth = r.Header.Get("Authorization")
+		gotContentType = r.Header.Get("Content-Type")
+
+		raw, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(raw, &gotBody)
+
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{"ok": true})
+	}))
+	defer srv.Close()
+
+	payload := map[string]interface{}{
+		"schema_version": 1,
+		"cli_version":    "v0.4.0",
+		"os":             "darwin",
+		"checks":         []interface{}{},
+	}
+
+	c := &hub.Client{BaseURL: srv.URL, Credential: "tok_diag"}
+	if err := c.PostDiagnostics(context.Background(), payload); err != nil {
+		t.Fatalf("PostDiagnostics() error = %v", err)
+	}
+
+	if gotMethod != http.MethodPost {
+		t.Errorf("method = %q, want POST", gotMethod)
+	}
+	if gotPath != "/api/cli/diagnostics" {
+		t.Errorf("path = %q, want /api/cli/diagnostics", gotPath)
+	}
+	if gotAuth != "Bearer tok_diag" {
+		t.Errorf("Authorization = %q, want Bearer tok_diag", gotAuth)
+	}
+	if gotContentType != "application/json" {
+		t.Errorf("Content-Type = %q, want application/json", gotContentType)
+	}
+	if v, _ := gotBody["schema_version"].(float64); v != 1 {
+		t.Errorf("body schema_version = %v, want 1", gotBody["schema_version"])
+	}
+}
+
+func TestPostDiagnostics_Unauthorized_ReturnsError(t *testing.T) {
+	const serverBody = "unauthorized"
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, serverBody, http.StatusUnauthorized)
+	}))
+	defer srv.Close()
+
+	c := &hub.Client{BaseURL: srv.URL, Credential: "tok_diag"}
+	err := c.PostDiagnostics(context.Background(), map[string]interface{}{"schema_version": 1})
+	if err == nil {
+		t.Fatal("PostDiagnostics() expected error on 401, got nil")
+	}
+	if !strings.Contains(err.Error(), "401") {
+		t.Errorf("error should reference 401, got: %v", err)
+	}
+	// Must not leak the response body verbatim.
+	if strings.Contains(err.Error(), serverBody) {
+		t.Errorf("error message leaks response body: %v", err)
+	}
+}
+
+func TestPostDiagnostics_Unprocessable_ReturnsError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "invalid payload", http.StatusUnprocessableEntity)
+	}))
+	defer srv.Close()
+
+	c := &hub.Client{BaseURL: srv.URL, Credential: "tok_diag"}
+	err := c.PostDiagnostics(context.Background(), map[string]interface{}{})
+	if err == nil {
+		t.Fatal("PostDiagnostics() expected error on 422, got nil")
+	}
+	if !strings.Contains(err.Error(), "422") {
+		t.Errorf("error should reference 422, got: %v", err)
+	}
+}
+
+func TestPostDiagnostics_NoCredential_OmitsAuthHeader(t *testing.T) {
+	var hadAuth bool
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, hadAuth = r.Header["Authorization"]
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{"ok": true})
+	}))
+	defer srv.Close()
+
+	c := &hub.Client{BaseURL: srv.URL} // no credential
+	if err := c.PostDiagnostics(context.Background(), map[string]interface{}{"schema_version": 1}); err != nil {
+		t.Fatalf("PostDiagnostics() error = %v", err)
+	}
+	if hadAuth {
+		t.Error("Authorization header should be omitted when no credential is set")
+	}
+}
+
+func TestPostDiagnostics_ContextCancellation(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-r.Context().Done()
+		http.Error(w, "cancelled", http.StatusServiceUnavailable)
+	}))
+	defer srv.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	c := &hub.Client{BaseURL: srv.URL, Credential: "tok_diag"}
+	if err := c.PostDiagnostics(ctx, map[string]interface{}{}); err == nil {
+		t.Fatal("expected error on cancelled context, got nil")
+	}
+}

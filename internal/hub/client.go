@@ -196,3 +196,45 @@ func (c *Client) FetchEnvValues(
 	}
 	return fr.Values, fr.Missing, nil
 }
+
+// PostDiagnostics uploads a doctor report to the Hub's diagnostics ingest so it
+// surfaces in /admin/diagnostics.
+//
+// Contract:
+//
+//	POST /api/cli/diagnostics
+//	Authorization: Bearer <credential>
+//	Request: { schema_version:1, cli_version, os, os_version?, arch?,
+//	           checks:[{name,status,fix_type,fix,detail}] }
+//	Response: 200 {ok:true} | 401 | 422 | 429
+//
+// payload is marshalled as-is (the doctor report plus its schema_version
+// envelope). A non-2xx response returns an error that includes the HTTP status
+// but never the raw body (to avoid leaking error details). Callers treat the
+// upload as best-effort — see the doctor command's non-fatal handling.
+func (c *Client) PostDiagnostics(ctx context.Context, payload any) error {
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("diagnostics: marshal request: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.BaseURL+"/api/cli/diagnostics", bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("diagnostics: build request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if c.Credential != "" {
+		req.Header.Set("Authorization", "Bearer "+c.Credential)
+	}
+
+	resp, err := c.httpClient().Do(req)
+	if err != nil {
+		return fmt.Errorf("diagnostics: request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		return fmt.Errorf("diagnostics post failed: %s", resp.Status)
+	}
+	return nil
+}

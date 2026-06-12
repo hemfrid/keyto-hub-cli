@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -11,8 +12,14 @@ import (
 	"runtime"
 	"strings"
 
+	"github.com/hemfrid/keyto-hub-cli/internal/config"
+	"github.com/hemfrid/keyto-hub-cli/internal/hub"
 	"github.com/hemfrid/keyto-hub-cli/internal/prereq"
 )
+
+// diagnosticsSchemaVersion is the envelope version the Hub's
+// /api/cli/diagnostics ingest expects around a doctor report.
+const diagnosticsSchemaVersion = 1
 
 // doctorTools is the prerequisite set `keyto doctor` diagnoses — the same set
 // `keyto start` ensures. Docker expands to two checks (engine + daemon) inside
@@ -31,9 +38,26 @@ type doctorReport struct {
 	Checks     []prereq.CheckResult `json:"checks"`
 }
 
+// diagnosticsPayload is the body POSTed to the Hub's /api/cli/diagnostics
+// ingest: the doctor report with the schema_version envelope field the contract
+// requires. Embedding doctorReport keeps the per-field json tags (ok/os/…)
+// identical to the --json output the Hub already understands.
+type diagnosticsPayload struct {
+	SchemaVersion int `json:"schema_version"`
+	doctorReport
+}
+
 // osVersion is a seam over the real OS-version probe so runDoctor is testable
 // without shelling out. Real impl: uname -r / sw_vers / cmd ver.
 var osVersion = realOSVersion
+
+// postDiagnostics is a seam over the Hub upload so runDoctor's report path can
+// be tested without hitting the network. The real impl builds a hub.Client from
+// the stored credential and POSTs the payload to /api/cli/diagnostics.
+var postDiagnostics = func(ctx context.Context, creds *config.Creds, payload any) error {
+	client := hub.Client{BaseURL: creds.HubURL, Credential: creds.Credential}
+	return client.PostDiagnostics(ctx, payload)
+}
 
 // diagnose is a seam over the prereq diagnosis (detection + inotify) so
 // runDoctor's flag handling, JSON shape and human summary can be tested with
@@ -51,6 +75,8 @@ func runDoctor(ctx context.Context, args []string) error {
 	asJSON := fs.Bool("json", false, "emit machine-readable JSON")
 	fix := fs.Bool("fix", false, "install the fixable prerequisites (consent-gated)")
 	yes := fs.Bool("yes", false, "auto-confirm installs during --fix")
+	report := fs.Bool("report", true, "upload the report to the Hub (default when authenticated)")
+	noReport := fs.Bool("no-report", false, "do not upload the report to the Hub")
 	if err := fs.Parse(args); err != nil {
 		return fmt.Errorf("doctor: parse flags: %w", err)
 	}
@@ -69,14 +95,56 @@ func runDoctor(ctx context.Context, args []string) error {
 	}
 
 	if *asJSON {
-		return emitDoctorJSON(ctx, os.Stdout, checks)
+		if err := emitDoctorJSON(ctx, os.Stdout, checks); err != nil {
+			return err
+		}
+	} else {
+		printDoctorHuman(os.Stdout, checks)
 	}
 
-	printDoctorHuman(os.Stdout, checks)
+	// Upload the report to the Hub so it lands in /admin/diagnostics. Default-on
+	// when authenticated; --no-report opts out. Always best-effort: a failed
+	// upload never changes the exit code (that reflects the local diagnosis).
+	maybeReportDoctor(ctx, checks, *report && !*noReport)
+
 	if anyBlocking(checks) {
 		return fmt.Errorf("doctor found blocking prerequisite issues — see above")
 	}
 	return nil
+}
+
+// maybeReportDoctor uploads the doctor report to the Hub when enabled and a
+// usable credential is on disk. It is non-fatal in every branch: a disabled
+// flag, missing/expired credential, or upload error each leaves the local
+// diagnosis untouched — at most it prints a one-line note to stderr. The local
+// report has already been written to stdout by the caller.
+func maybeReportDoctor(ctx context.Context, checks []prereq.CheckResult, enabled bool) {
+	if !enabled {
+		return
+	}
+	creds, err := config.Load()
+	if err != nil {
+		// ErrNotAuthed (no credential) → skip silently; any other load error is
+		// equally non-fatal for a best-effort report.
+		if !errors.Is(err, config.ErrNotAuthed) {
+			fmt.Fprintf(os.Stderr, "note: couldn't send setup report to the Hub: %v\n", err)
+		}
+		return
+	}
+	if creds == nil || creds.Expired() {
+		return
+	}
+
+	payload := diagnosticsPayload{
+		SchemaVersion: diagnosticsSchemaVersion,
+		doctorReport:  buildDoctorReport(ctx, checks),
+	}
+
+	if err := postDiagnostics(ctx, creds, payload); err != nil {
+		fmt.Fprintf(os.Stderr, "note: couldn't send setup report to the Hub: %v\n", err)
+		return
+	}
+	fmt.Fprintln(os.Stderr, "• sent your setup report to the Hub")
 }
 
 // diagnoseAll runs the prereq diagnosis plus the Linux inotify advisory, in the
@@ -97,10 +165,12 @@ func anyBlocking(checks []prereq.CheckResult) bool {
 	return false
 }
 
-// emitDoctorJSON writes the machine form. ctx is threaded so the OS-version
+// buildDoctorReport assembles the doctorReport from the diagnosed checks plus
+// the host/CLI metadata. It is the single source of truth for the report shape
+// shared by --json output and the Hub upload. ctx is threaded so the OS-version
 // probe shares the command's cancellation.
-func emitDoctorJSON(ctx context.Context, w io.Writer, checks []prereq.CheckResult) error {
-	rep := doctorReport{
+func buildDoctorReport(ctx context.Context, checks []prereq.CheckResult) doctorReport {
+	return doctorReport{
 		OK:         !anyBlocking(checks),
 		OS:         runtime.GOOS,
 		OSVersion:  osVersion(ctx),
@@ -108,6 +178,12 @@ func emitDoctorJSON(ctx context.Context, w io.Writer, checks []prereq.CheckResul
 		CLIVersion: version,
 		Checks:     checks,
 	}
+}
+
+// emitDoctorJSON writes the machine form. ctx is threaded so the OS-version
+// probe shares the command's cancellation.
+func emitDoctorJSON(ctx context.Context, w io.Writer, checks []prereq.CheckResult) error {
+	rep := buildDoctorReport(ctx, checks)
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")
 	return enc.Encode(rep)
