@@ -44,8 +44,19 @@ The everyday loop is **`keyto checkout <project>` → `keyto start`**:
   offering to install anything missing (only after you confirm) — then runs
   `keyto env sync`, `docker compose up -d --wait`, your `migrate` script (when a
   database is up), `npm install` (if needed), and finally `npm run dev` in the
-  foreground. Flags: `--no-sync`, `--no-migrate`, `--no-install`, `--yes`
-  (auto-confirm prereq installs).
+  foreground. Once the dev server is listening it **opens the app in your
+  browser** (`http://localhost:3000`, or `$PORT`). Flags: `--no-sync`,
+  `--no-migrate`, `--no-install`, `--yes` (auto-confirm prereq installs),
+  `--no-open` (don't open the browser).
+
+> **Each project is its own Docker run.** `keyto env sync` writes
+> `COMPOSE_PROJECT_NAME=<project>` plus deterministic per-project host ports
+> (`POSTGRES_PORT`/`REDIS_PORT`/`MYSQL_PORT`) into `.env`, so every project gets
+> its **own** containers, volume and network — `<project>-postgres-1`, not a
+> shared `keyto-app`. This is why the project's database is created reliably
+> (a shared volume only honors `POSTGRES_DB` on its first init) and lets two
+> projects' stacks run side by side. On the rare port clash, override e.g.
+> `POSTGRES_PORT` in `.env.local`.
 
 Then edit locally (with Claude Code, your editor, whatever) and `git push` — it
 flows through the Keyto Hub to GitHub.
@@ -88,8 +99,10 @@ go build -o keyto ./cmd/keyto
   commit identity.
 - `keyto start` → boots the checked-out project locally: prerequisite checks
   (git/Docker/Node, consent-gated install of anything missing) → `keyto env sync`
-  → `docker compose up -d --wait` → `npm run migrate` (when a DB is up) →
-  `npm install` (if needed) → `npm run dev`.
+  (writes `COMPOSE_PROJECT_NAME` + per-project host ports for an isolated Docker
+  run) → `docker compose up -d --wait` → `npm install` (if needed) →
+  `npm run migrate` (when a DB is up) → `npm run dev`, then opens the app URL in
+  the browser (`--no-open` to skip; skipped automatically on CI/non-interactive).
 - `git push` → the credential helper supplies the credential → the Hub authorizes
   you live against project membership → relays to GitHub as the App. Revoking your
   access at the Hub cuts pushes immediately.

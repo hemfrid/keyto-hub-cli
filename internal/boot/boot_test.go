@@ -6,6 +6,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 )
 
 func baseDeps(rec *[]string) Deps {
@@ -101,6 +102,60 @@ func TestRun_NoInstallFlag_SkipsInstallButRunsApp(t *testing.T) {
 		if s == "install" {
 			t.Fatal("--no-install must skip npm install")
 		}
+	}
+}
+
+func TestShouldOpenApp(t *testing.T) {
+	open := func(context.Context) {}
+	cases := []struct {
+		name string
+		dep  func(context.Context)
+		flag Flags
+		want bool
+	}{
+		{"wired, default", open, Flags{}, true},
+		{"wired, --no-open", open, Flags{NoOpen: true}, false},
+		{"no dep", nil, Flags{}, false},
+	}
+	for _, c := range cases {
+		d := Deps{OpenApp: c.dep}
+		if got := shouldOpenApp(d, c.flag); got != c.want {
+			t.Errorf("%s: shouldOpenApp = %v, want %v", c.name, got, c.want)
+		}
+	}
+}
+
+func TestRun_OpensApp_WhenWired(t *testing.T) {
+	var rec []string
+	d := baseDeps(&rec)
+	opened := make(chan struct{}, 1)
+	d.OpenApp = func(context.Context) { opened <- struct{}{} }
+
+	if err := Run(context.Background(), d, Flags{}); err != nil {
+		t.Fatalf("unexpected: %v", err)
+	}
+	select {
+	case <-opened:
+		// browser-open was launched as expected
+	case <-time.After(2 * time.Second):
+		t.Fatal("OpenApp was not invoked")
+	}
+}
+
+func TestRun_NoOpen_DoesNotOpenApp(t *testing.T) {
+	var rec []string
+	d := baseDeps(&rec)
+	opened := make(chan struct{}, 1)
+	d.OpenApp = func(context.Context) { opened <- struct{}{} }
+
+	if err := Run(context.Background(), d, Flags{NoOpen: true}); err != nil {
+		t.Fatalf("unexpected: %v", err)
+	}
+	select {
+	case <-opened:
+		t.Fatal("OpenApp must not run under --no-open")
+	case <-time.After(100 * time.Millisecond):
+		// no open — correct
 	}
 }
 

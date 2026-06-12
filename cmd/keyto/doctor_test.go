@@ -241,10 +241,17 @@ func TestRunDoctor_Authed_UploadsReport(t *testing.T) {
 	if v, _ := got["schema_version"].(float64); v != 1 {
 		t.Errorf("schema_version = %v, want 1", got["schema_version"])
 	}
-	for _, key := range []string{"schema_version", "ok", "os", "os_version", "arch", "cli_version", "checks"} {
+	// Required contract keys (snake_case). os_version/arch are optional (omitempty).
+	for _, key := range []string{"schema_version", "os", "cli_version", "checks"} {
 		if _, ok := got[key]; !ok {
 			t.Errorf("payload missing contract key %q\n%s", key, raw)
 		}
+	}
+	// Regression (the 422 fix): the Hub schema is .strict() and derives
+	// overall_ok server-side, so the upload must NOT carry an `ok` field —
+	// an extra key is rejected with 422 Unprocessable Entity.
+	if _, present := got["ok"]; present {
+		t.Errorf("payload must NOT include `ok` (strict Hub schema → 422)\n%s", raw)
 	}
 	// Per-check keys (the Hub ingest reads these literal names).
 	for _, key := range []string{`"name"`, `"status"`, `"fix_type"`, `"fix"`, `"detail"`} {

@@ -21,11 +21,21 @@ type Deps struct {
 	NodeModulesPresent func() bool
 	Install            func(ctx context.Context) error
 	RunScript          func(ctx context.Context, script string) error
-	Out                io.Writer
+	// OpenApp, when set, is launched in the background just before the dev
+	// server starts. The real impl waits until the app URL responds, then opens
+	// it in the browser. nil (e.g. CI / non-interactive) disables the behaviour.
+	OpenApp func(ctx context.Context)
+	Out     io.Writer
 }
 
 type Flags struct {
-	NoSync, NoMigrate, NoInstall, Yes bool
+	NoSync, NoMigrate, NoInstall, Yes, NoOpen bool
+}
+
+// shouldOpenApp reports whether the browser should be opened once the dev
+// server is up: an OpenApp dep is wired AND the user didn't pass --no-open.
+func shouldOpenApp(d Deps, f Flags) bool {
+	return d.OpenApp != nil && !f.NoOpen
 }
 
 func Run(ctx context.Context, d Deps, f Flags) error {
@@ -84,6 +94,13 @@ func Run(ctx context.Context, d Deps, f Flags) error {
 		}
 	} else {
 		fmt.Fprintln(d.Out, "• no migrations to run (no DB or no migrate script)")
+	}
+
+	// Open the app in the browser once it's listening. Launched before the
+	// (blocking) dev server so it can poll while next dev boots; it opens the
+	// browser when the URL responds and is a no-op if the server never comes up.
+	if shouldOpenApp(d, f) {
+		go d.OpenApp(ctx)
 	}
 
 	fmt.Fprintln(d.Out, "• starting the app (npm run dev) — Ctrl-C to stop. Backing services stay up; `docker compose down` to stop them.")
