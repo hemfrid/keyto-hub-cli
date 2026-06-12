@@ -111,16 +111,19 @@ func TestRun_MissingNodeModules_Installs(t *testing.T) {
 	if err := Run(context.Background(), d, Flags{}); err != nil {
 		t.Fatalf("unexpected: %v", err)
 	}
-	var installedBeforeDev bool
+	var installed bool
 	for _, s := range rec {
 		if s == "install" {
-			installedBeforeDev = true
+			installed = true
 		}
-		if s == "run:dev" && !installedBeforeDev {
-			t.Fatal("install must run before the app when node_modules is absent")
+		// install MUST precede migrate (npm run migrate needs tsx/drizzle from
+		// node_modules) AND the app. Regression guard for the "tsx: command not
+		// found" exit-127 on a fresh checkout.
+		if (s == "run:migrate" || s == "run:dev") && !installed {
+			t.Fatalf("install must run before %q when node_modules is absent", s)
 		}
 	}
-	if !installedBeforeDev {
+	if !installed {
 		t.Fatal("expected install to run when node_modules is absent")
 	}
 }
