@@ -3,11 +3,14 @@ package prereq
 import (
 	"bytes"
 	"context"
+	"errors"
 	"strings"
 	"testing"
 )
 
-// fakeEnv builds Deps whose probes/installs are scripted.
+// fakeEnv builds Deps whose probes/installs are scripted. ComposeOK reports the
+// Compose v2 plugin present whenever docker is present (tests that exercise the
+// missing-plugin path override it explicitly).
 func fakeEnv(present map[string]string, daemonUp bool, accept bool, runErr error) (*Deps, *[]string) {
 	var ran []string
 	d := &Deps{
@@ -15,6 +18,7 @@ func fakeEnv(present map[string]string, daemonUp bool, accept bool, runErr error
 		HasCommand: func(name string) bool { _, ok := present[name]; return ok },
 		Version:    func(name string) (string, error) { return present[name], nil },
 		DaemonUp:   func(ctx context.Context) bool { return daemonUp },
+		ComposeOK:  func(ctx context.Context) bool { _, ok := present["docker"]; return ok },
 		Prompt:     func(string) bool { return accept },
 		Run: func(ctx context.Context, name string, args ...string) error {
 			ran = append(ran, name+" "+strings.Join(args, " "))
@@ -116,6 +120,7 @@ func daemonDownEnv(colimaPresent, accept bool) (*Deps, *[]string, *bool) {
 		HasCommand: func(name string) bool { _, ok := present[name]; return ok },
 		Version:    func(name string) (string, error) { return present[name], nil },
 		DaemonUp:   func(ctx context.Context) bool { return up },
+		ComposeOK:  func(ctx context.Context) bool { return true },
 		Prompt:     func(string) bool { return accept },
 		Run: func(ctx context.Context, name string, args ...string) error {
 			ran = append(ran, name+" "+strings.Join(args, " "))
@@ -153,5 +158,150 @@ func TestEnsure_DaemonDown_ColimaStart_Declined_Errors(t *testing.T) {
 	}
 	if len(*ran) != 0 {
 		t.Fatalf("must NOT start colima without consent, ran: %v", *ran)
+	}
+}
+
+func TestEnsure_ComposePluginPresent_OK(t *testing.T) {
+	d, ran := fakeEnv(map[string]string{"docker": "27"}, true, false, nil)
+	d.Out = &bytes.Buffer{}
+	d.ComposeOK = func(ctx context.Context) bool { return true }
+	if err := Ensure(context.Background(), []Tool{DockerCompose}, Opts{Deps: *d}); err != nil {
+		t.Fatalf("compose plugin present should pass: %v", err)
+	}
+	if len(*ran) != 0 {
+		t.Fatalf("nothing should run for a present compose plugin, ran: %v", *ran)
+	}
+}
+
+func TestEnsure_ComposePluginMissing_Errors(t *testing.T) {
+	d, ran := fakeEnv(map[string]string{"docker": "27"}, true, false, nil)
+	d.Out = &bytes.Buffer{}
+	d.ComposeOK = func(ctx context.Context) bool { return false }
+	err := Ensure(context.Background(), []Tool{DockerCompose}, Opts{Deps: *d})
+	if err == nil {
+		t.Fatal("expected an error when the compose plugin is missing")
+	}
+	if !strings.Contains(err.Error(), "Compose") || !strings.Contains(err.Error(), "docker-compose") {
+		t.Fatalf("error should name the compose plugin and the macOS fix: %v", err)
+	}
+	if len(*ran) != 0 {
+		t.Fatalf("compose check must not run installs, ran: %v", *ran)
+	}
+}
+
+func TestEnsure_ComposePluginMissing_Linux_NamesPluginPackage(t *testing.T) {
+	d, _ := fakeEnv(map[string]string{"docker": "27", "apt-get": ""}, true, false, nil)
+	d.OS = "linux"
+	d.Out = &bytes.Buffer{}
+	d.ComposeOK = func(ctx context.Context) bool { return false }
+	err := Ensure(context.Background(), []Tool{DockerCompose}, Opts{Deps: *d})
+	if err == nil || !strings.Contains(err.Error(), "docker-compose-plugin") {
+		t.Fatalf("linux compose guidance should name docker-compose-plugin, got: %v", err)
+	}
+}
+
+func TestEnsure_ComposePluginMissing_NoDocker_Skips(t *testing.T) {
+	// When docker itself is absent, the Docker tool reports it; the compose
+	// check should not double-report (and ComposeOK must not even be consulted).
+	d, ran := fakeEnv(map[string]string{}, false, false, nil)
+	d.Out = &bytes.Buffer{}
+	d.ComposeOK = func(ctx context.Context) bool {
+		t.Fatal("ComposeOK must not be called when docker is absent")
+		return false
+	}
+	if err := Ensure(context.Background(), []Tool{DockerCompose}, Opts{Deps: *d}); err != nil {
+		t.Fatalf("compose check should skip silently when docker is absent: %v", err)
+	}
+	if len(*ran) != 0 {
+		t.Fatalf("nothing should run, ran: %v", *ran)
+	}
+}
+
+func TestEnsure_DaemonDown_ComposeCheckStillPasses(t *testing.T) {
+	// The compose plugin is installable independent of the daemon running —
+	// `docker compose version` answers without a daemon. So a daemon-down env
+	// with the plugin present must NOT fail the DockerCompose check.
+	d, ran := fakeEnv(map[string]string{"docker": "27"}, false /* daemon down */, false, nil)
+	d.Out = &bytes.Buffer{}
+	d.ComposeOK = func(ctx context.Context) bool { return true }
+	if err := Ensure(context.Background(), []Tool{DockerCompose}, Opts{Deps: *d}); err != nil {
+		t.Fatalf("daemon-down must not fail the compose-plugin check: %v", err)
+	}
+	if len(*ran) != 0 {
+		t.Fatalf("nothing should run, ran: %v", *ran)
+	}
+}
+
+func TestInstallMethod_LinuxNode_UsesNodeSourceV20(t *testing.T) {
+	d, _ := fakeEnv(map[string]string{"apt-get": ""}, false, true, nil)
+	d.OS = "linux"
+	o := Opts{Deps: *d}
+	desc, cmd, auto := o.installMethod(Node)
+	if !auto || cmd == nil {
+		t.Fatalf("linux node install should be auto-capable, got auto=%v cmd=%v", auto, cmd)
+	}
+	joined := strings.Join(cmd, " ")
+	if !strings.Contains(joined, "deb.nodesource.com/setup_20.x") {
+		t.Fatalf("apt node install must use NodeSource v20, got: %s", joined)
+	}
+	if !strings.Contains(joined, "apt-get install -y nodejs") {
+		t.Fatalf("apt node install must install nodejs after the setup script, got: %s", joined)
+	}
+	if !strings.Contains(desc, "NodeSource") {
+		t.Fatalf("desc should mention NodeSource, got: %s", desc)
+	}
+	// It must NOT be the stale `apt-get install nodejs` with no NodeSource repo.
+	if joined == "sudo apt-get install -y nodejs" {
+		t.Fatalf("must not use the stale distro nodejs install: %s", joined)
+	}
+}
+
+func TestInstallMethod_LinuxNode_Dnf_UsesNodeSourceV20(t *testing.T) {
+	d, _ := fakeEnv(map[string]string{"dnf": ""}, false, true, nil)
+	d.OS = "linux"
+	o := Opts{Deps: *d}
+	_, cmd, auto := o.installMethod(Node)
+	if !auto || cmd == nil {
+		t.Fatal("dnf node install should be auto-capable")
+	}
+	joined := strings.Join(cmd, " ")
+	if !strings.Contains(joined, "rpm.nodesource.com/setup_20.x") || !strings.Contains(joined, "dnf install -y nodejs") {
+		t.Fatalf("dnf node install must use NodeSource v20 rpm setup, got: %s", joined)
+	}
+}
+
+func TestInotifyWarning(t *testing.T) {
+	o := Opts{Deps: Deps{OS: "linux"}}
+
+	// Below threshold → warning naming the sysctl fix.
+	w := o.InotifyWarning(func(string) ([]byte, error) { return []byte("8192\n"), nil })
+	if w == "" {
+		t.Fatal("expected a warning for a low watch limit")
+	}
+	if !strings.Contains(w, "fs.inotify.max_user_watches") || !strings.Contains(w, "sysctl") {
+		t.Fatalf("warning should name the sysctl fix, got: %q", w)
+	}
+
+	// At/above threshold → no warning.
+	if got := o.InotifyWarning(func(string) ([]byte, error) { return []byte("524288"), nil }); got != "" {
+		t.Fatalf("healthy limit should produce no warning, got: %q", got)
+	}
+	if got := o.InotifyWarning(func(string) ([]byte, error) { return []byte("65536"), nil }); got != "" {
+		t.Fatalf("limit exactly at the floor should produce no warning, got: %q", got)
+	}
+
+	// Unreadable / unparseable → silent (no nag).
+	if got := o.InotifyWarning(func(string) ([]byte, error) { return nil, errors.New("nope") }); got != "" {
+		t.Fatalf("unreadable limit should be silent, got: %q", got)
+	}
+	if got := o.InotifyWarning(func(string) ([]byte, error) { return []byte("garbage"), nil }); got != "" {
+		t.Fatalf("unparseable limit should be silent, got: %q", got)
+	}
+}
+
+func TestInotifyWarning_NonLinux_Silent(t *testing.T) {
+	o := Opts{Deps: Deps{OS: "darwin"}}
+	if got := o.InotifyWarning(func(string) ([]byte, error) { return []byte("8192"), nil }); got != "" {
+		t.Fatalf("non-linux should never warn, got: %q", got)
 	}
 }
