@@ -132,6 +132,8 @@ func dispatch(args []string) error {
 		ui.Banner(os.Stderr, ui.IsStderrTTY(), ui.TermWidth(), false, version)
 		selfupdate.MaybeNotify(version, ui.IsStderrTTY(), os.Stderr)
 		return runStartRouter(context.Background(), args[1:])
+	case "doctor":
+		return runDoctor(context.Background(), args[1:])
 	case "update":
 		return runUpdate()
 	case "shell-init":
@@ -431,7 +433,8 @@ func realPrereqDeps(ctx context.Context) prereq.Deps {
 		ComposeOK: func(ctx context.Context) bool {
 			return exec.CommandContext(ctx, "docker", "compose", "version").Run() == nil
 		},
-		Prompt: promptYesNo,
+		VirtualizationOK: prereq.VirtualizationOK,
+		Prompt:           promptYesNo,
 		Run: func(ctx context.Context, name string, args ...string) error {
 			c := exec.CommandContext(ctx, name, args...)
 			c.Stdout = os.Stderr
@@ -762,6 +765,8 @@ func printUsage() {
 	fmt.Println("  checkout    Clone and wire a Keyto project, then cd into it")
 	fmt.Println("  start       Boot the current project locally (prereqs, env sync, compose, migrate, npm run dev)")
 	fmt.Println("              Flags: --no-sync  --no-migrate  --no-install  --yes")
+	fmt.Println("  doctor      Diagnose local prerequisites (git, Docker, Node) and print how to fix them")
+	fmt.Println("              Flags: --json (machine output)  --fix (install fixable ones, consent-gated)")
 	fmt.Println("  update      Update keyto to the latest release")
 	fmt.Println("  shell-init  Print the shell integration snippet (eval \"$(keyto shell-init)\")")
 	fmt.Println("  credential  Git credential helper")
