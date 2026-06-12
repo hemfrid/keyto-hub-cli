@@ -30,6 +30,7 @@ version with `KEYTO_VERSION=vX.Y.Z`; override the location with
 keyto auth              # sign in via your browser (Keyto SSO) — stores a credential locally
 keyto checkout <name>   # clone a project and wire git to push through the Hub, then cd into it
 keyto start             # boot the project locally: prereqs → env sync → docker compose → migrate → npm run dev
+keyto doctor            # diagnose local prerequisites and print how to fix them
 keyto update            # update keyto in place to the latest release
 ```
 
@@ -38,10 +39,14 @@ The everyday loop is **`keyto checkout <project>` → `keyto start`**:
 - **`keyto checkout`** clones the project via the Hub git proxy, wires the git
   remote / credential helper / your commit identity, and (with shell
   integration) drops you into the directory. With no argument it lists your
-  projects; run inside an existing checkout it re-wires it.
+  projects; run inside an existing checkout it re-wires it. If git is missing it
+  guides you through installing it first.
 - **`keyto start`** brings the project up on your machine with one command. It
-  checks that **git, Docker (daemon running), and Node ≥20** are present —
-  offering to install anything missing (only after you confirm) — then runs
+  runs the same preflight as `keyto doctor` — **git, the Docker engine + daemon,
+  the Docker Compose v2 plugin, and Node ≥20** — and offers consent-gated
+  installs of anything missing (Linux Node via NodeSource, macOS via brew/nvm,
+  Windows via winget; only after you confirm). It warns on a low Linux inotify
+  watcher limit (which can break `next dev` hot reload), then runs
   `keyto env sync`, `docker compose up -d --wait`, your `migrate` script (when a
   database is up), `npm install` (if needed), and finally `npm run dev` in the
   foreground. Flags: `--no-sync`, `--no-migrate`, `--no-install`, `--yes`
@@ -49,6 +54,31 @@ The everyday loop is **`keyto checkout <project>` → `keyto start`**:
 
 Then edit locally (with Claude Code, your editor, whatever) and `git push` — it
 flows through the Keyto Hub to GitHub.
+
+### `keyto doctor`
+
+`keyto doctor` runs the local prerequisite diagnostics on their own — **git, the
+Docker engine + daemon, the Docker Compose v2 plugin, and Node 20**. It is
+**detect-only** (it changes nothing without `--fix`) and classifies each issue by
+how it gets fixed:
+
+- **auto** — keyto can install it for you;
+- **command** — a single command you run (printed inline);
+- **manual** — a multi-step human action (e.g. enabling CPU virtualization in
+  BIOS/UEFI on Windows so Docker Desktop/WSL2 can start at all).
+
+It prints an **AI-readable summary** you can paste straight into Claude or Codex
+to be walked through the fixes (plus a fixability tally). Flags:
+
+- `--json` — machine-readable output for tooling.
+- `--fix` — run the auto/command fixes (consent-gated; manual items are never
+  auto-run), then re-diagnose.
+- `--report` / `--no-report` — upload the report to the Hub, where admins see it
+  at `/admin/diagnostics`. Default-on when you're signed in; always best-effort,
+  so a failed upload never changes the result.
+
+`keyto start` runs the same checks as part of its preflight, so `keyto doctor` is
+mainly for diagnosing a machine before (or instead of) booting a project.
 
 > **Renamed:** clone+wire moved from `keyto start` to **`keyto checkout`**;
 > `keyto start` is now the local boot loop. `keyto start <name>` and the old
@@ -82,7 +112,9 @@ go build -o keyto ./cmd/keyto
 ## How it fits together
 
 - `keyto auth` → browser SSO (RFC 8252 loopback + PKCE) → the Hub issues a
-  revocable, per-user credential stored `0600` in `~/.keyto/`.
+  revocable, per-user credential stored `0600` in `~/.keyto/`. If your sign-in
+  has expired or been revoked, `keyto checkout` / `keyto start` re-auth you
+  automatically — no more `keyto auth --force`.
 - `keyto checkout` → lists your projects, clones the chosen one via the Hub git
   proxy, and configures the git remote, the `keyto credential` helper, and your
   commit identity.
