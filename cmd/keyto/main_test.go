@@ -14,6 +14,7 @@ import (
 	"github.com/hemfrid/keyto-hub-cli/internal/config"
 	"github.com/hemfrid/keyto-hub-cli/internal/envsync"
 	"github.com/hemfrid/keyto-hub-cli/internal/hub"
+	"github.com/hemfrid/keyto-hub-cli/internal/project"
 )
 
 // reuseCredential decides whether `keyto auth` should reuse an existing
@@ -143,22 +144,63 @@ func TestDispatch_CheckoutRoutesToRunCheckout(t *testing.T) {
 	}
 }
 
-// TestDispatch_DevRoutesToRunDev ensures `keyto dev` routes to the runDev
-// package variable (similar to the runUpdate pattern), without running Docker.
-func TestDispatch_DevRoutesToRunDev(t *testing.T) {
-	called := false
-	origRunDev := runDev
-	runDev = func(ctx context.Context, args []string) error {
-		called = true
-		return nil
-	}
-	t.Cleanup(func() { runDev = origRunDev })
+// routeStubs swaps the boot/checkout entry points and the marker reader for
+// fakes so the start router's boot-vs-checkout decision can be asserted without
+// any real clone or local boot. It returns pointers to the called flags.
+func routeStubs(t *testing.T, marker *project.Marker) (boot, checkout *bool) {
+	b, c := false, false
+	ob, oc, om := runBoot, runCheckout, readMarker
+	runBoot = func(ctx context.Context, args []string) error { b = true; return nil }
+	runCheckout = func(ctx context.Context, args []string) error { c = true; return nil }
+	readMarker = func(dir string) (*project.Marker, error) { return marker, nil }
+	t.Cleanup(func() { runBoot, runCheckout, readMarker = ob, oc, om })
+	return &b, &c
+}
 
+func TestStartRouter_NoArgInProject_RoutesToBoot(t *testing.T) {
+	boot, checkout := routeStubs(t, &project.Marker{Name: "demo"})
+	if err := runStartRouter(context.Background(), nil); err != nil {
+		t.Fatal(err)
+	}
+	if !*boot || *checkout {
+		t.Fatalf("want boot only; boot=%v checkout=%v", *boot, *checkout)
+	}
+}
+
+func TestStartRouter_MatchingName_RoutesToBoot(t *testing.T) {
+	boot, checkout := routeStubs(t, &project.Marker{Name: "demo"})
+	_ = runStartRouter(context.Background(), []string{"demo"})
+	if !*boot || *checkout {
+		t.Fatalf("want boot only; boot=%v checkout=%v", *boot, *checkout)
+	}
+}
+
+func TestStartRouter_ForeignName_RoutesToCheckout(t *testing.T) {
+	boot, checkout := routeStubs(t, &project.Marker{Name: "demo"})
+	_ = runStartRouter(context.Background(), []string{"other"})
+	if *boot || !*checkout {
+		t.Fatalf("want checkout only; boot=%v checkout=%v", *boot, *checkout)
+	}
+}
+
+func TestStartRouter_NoArgNoProject_RoutesToCheckout(t *testing.T) {
+	boot, checkout := routeStubs(t, nil)
+	_ = runStartRouter(context.Background(), nil)
+	if *boot || !*checkout {
+		t.Fatalf("want checkout (deprecated picker); boot=%v checkout=%v", *boot, *checkout)
+	}
+}
+
+func TestDispatch_DevRoutesToBoot(t *testing.T) {
+	orig := runBoot
+	called := false
+	runBoot = func(ctx context.Context, args []string) error { called = true; return nil }
+	t.Cleanup(func() { runBoot = orig })
 	if err := dispatch([]string{"dev"}); err != nil {
-		t.Fatalf("dispatch(dev) returned error: %v", err)
+		t.Fatal(err)
 	}
 	if !called {
-		t.Fatal("dispatch did not route 'dev' to runDev")
+		t.Fatal("dispatch did not route 'dev' to runBoot")
 	}
 }
 

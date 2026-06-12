@@ -1,16 +1,22 @@
 package main
 
 import (
+	"bufio"
 	"context"
+	"encoding/json"
 	"errors"
+	"flag"
 	"fmt"
+	"io"
 	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"github.com/hemfrid/keyto-hub-cli/internal/auth"
+	"github.com/hemfrid/keyto-hub-cli/internal/boot"
 	"github.com/hemfrid/keyto-hub-cli/internal/browser"
 	"github.com/hemfrid/keyto-hub-cli/internal/checkout"
 	"github.com/hemfrid/keyto-hub-cli/internal/config"
@@ -18,6 +24,7 @@ import (
 	"github.com/hemfrid/keyto-hub-cli/internal/envsync"
 	"github.com/hemfrid/keyto-hub-cli/internal/gitwire"
 	"github.com/hemfrid/keyto-hub-cli/internal/hub"
+	"github.com/hemfrid/keyto-hub-cli/internal/prereq"
 	"github.com/hemfrid/keyto-hub-cli/internal/project"
 	"github.com/hemfrid/keyto-hub-cli/internal/selfupdate"
 	"github.com/hemfrid/keyto-hub-cli/internal/shellinit"
@@ -71,11 +78,11 @@ func dispatch(args []string) error {
 		selfupdate.MaybeNotify(version, ui.IsStderrTTY(), os.Stderr)
 		return runCheckout(context.Background(), args[1:])
 	case "start":
-		// start will become a foreground boot loop (Chunk 5) whose stdout must
-		// stream; delegate to checkout for now so existing users are not broken.
+		// Banner + the self-update nudge go to stderr so a foreground boot
+		// (npm run dev) keeps stdout clean. The router decides boot-vs-checkout.
 		ui.Banner(os.Stderr, ui.IsStderrTTY(), ui.TermWidth(), false, version)
 		selfupdate.MaybeNotify(version, ui.IsStderrTTY(), os.Stderr)
-		return runCheckout(context.Background(), args[1:])
+		return runStartRouter(context.Background(), args[1:])
 	case "update":
 		return runUpdate()
 	case "shell-init":
@@ -85,7 +92,8 @@ func dispatch(args []string) error {
 	case "env":
 		return runEnvDispatch(context.Background(), args[1:])
 	case "dev":
-		return runDev(context.Background(), args[1:])
+		fmt.Fprintln(os.Stderr, "note: 'keyto dev' is deprecated — use 'keyto start'. Compose passthrough args are ignored.")
+		return runBoot(context.Background(), nil)
 	default:
 		return fmt.Errorf("unknown command: %s", args[0])
 	}
@@ -174,6 +182,241 @@ func runCheckoutImpl(ctx context.Context, args []string) error {
 	return nil
 }
 
+// readMarker reads the keyto project marker from dir. It is a package var so
+// the start router's boot-vs-checkout decision can be tested with a fake.
+var readMarker = func(dir string) (*project.Marker, error) { return project.Read(dir) }
+
+// runBoot is a package var so dispatch/router routing can be tested without
+// running a real local boot loop (prereqs, compose, npm).
+var runBoot = func(ctx context.Context, args []string) error { return runBootImpl(ctx, args) }
+
+// runStartRouter decides what `keyto start [name]` does now that start means
+// "boot the current project". With no name: boot when we're in a project, else
+// fall back (with a deprecation note) to the checkout picker. With a name:
+// boot only when it matches the current project's marker; otherwise treat it as
+// the old `start <name>` clone request and run checkout (with a note).
+func runStartRouter(ctx context.Context, args []string) error {
+	name := ""
+	for _, a := range args {
+		if !strings.HasPrefix(a, "-") {
+			name = a
+			break
+		}
+	}
+	cwd, _ := os.Getwd()
+	m, _ := readMarker(cwd)
+	if name == "" {
+		if m != nil {
+			return runBoot(ctx, args)
+		}
+		fmt.Fprintln(os.Stderr, "note: 'keyto start' now boots the current project; clone with 'keyto checkout'. Running checkout for you this time.")
+		return runCheckout(ctx, args)
+	}
+	if m != nil && m.Name == name {
+		return runBoot(ctx, args)
+	}
+	fmt.Fprintln(os.Stderr, "note: 'keyto start <name>' is now 'keyto checkout <name>'. Running checkout for you this time.")
+	return runCheckout(ctx, args)
+}
+
+// runBootImpl implements `keyto start`: the one-command local boot loop. It
+// parses the start flags, builds boot.Deps from real os/exec implementations,
+// and delegates the orchestration to boot.Run.
+func runBootImpl(ctx context.Context, args []string) error {
+	// A stale shell-integration wrapper captured stdout (for the old `start`
+	// cd-handoff) and would swallow the foreground `npm run dev` output. Nudge
+	// the user to refresh it. checkout still emits the cd target on stdout.
+	if os.Getenv("KEYTO_SHELL_INTEGRATION") == "1" {
+		fmt.Fprintln(os.Stderr, `note: your shell integration is outdated — run 'eval "$(keyto shell-init)"' (or reinstall) so 'keyto start' streams output; 'keyto checkout' is now the clone command.`)
+	}
+
+	fs := flag.NewFlagSet("start", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	noSync := fs.Bool("no-sync", false, "reuse the existing .env instead of running env sync")
+	noMigrate := fs.Bool("no-migrate", false, "skip applying migrations")
+	noInstall := fs.Bool("no-install", false, "skip npm install even when node_modules is absent")
+	yes := fs.Bool("yes", false, "auto-confirm prerequisite installs")
+	if err := fs.Parse(args); err != nil {
+		return fmt.Errorf("start: parse flags: %w", err)
+	}
+	flags := boot.Flags{
+		NoSync:    *noSync,
+		NoMigrate: *noMigrate,
+		NoInstall: *noInstall,
+		Yes:       *yes,
+	}
+
+	cwd, err := os.Getwd()
+	if err != nil {
+		return fmt.Errorf("start: get working directory: %w", err)
+	}
+
+	deps := boot.Deps{
+		HasMarker: func() bool {
+			m, _ := readMarker(cwd)
+			return m != nil
+		},
+		Scripts: func() (map[string]string, error) {
+			return readPackageScripts(cwd)
+		},
+		EnsurePrereqs: func(ctx context.Context) error {
+			return prereq.Ensure(ctx,
+				[]prereq.Tool{prereq.Git, prereq.Docker, prereq.Node},
+				prereq.Opts{Deps: realPrereqDeps(ctx), AutoYes: flags.Yes})
+		},
+		EnvSync:       func(ctx context.Context) error { return runEnvSync(ctx, nil) },
+		EnvFileExists: func() bool { return fileExists(filepath.Join(cwd, ".env")) },
+		HasCompose: func() bool {
+			return fileExists(filepath.Join(cwd, "docker-compose.yml")) ||
+				fileExists(filepath.Join(cwd, "docker-compose.yaml"))
+		},
+		ComposeUp: func(ctx context.Context) error {
+			cmd := exec.CommandContext(ctx, "docker", "compose", "up", "-d", "--wait")
+			cmd.Dir = cwd
+			cmd.Stdout = os.Stderr
+			cmd.Stderr = os.Stderr
+			return cmd.Run()
+		},
+		DBRunning:          func(ctx context.Context) bool { return composeDBRunning(ctx, cwd) },
+		NodeModulesPresent: func() bool { return dirExists(filepath.Join(cwd, "node_modules")) },
+		Install:            func(ctx context.Context) error { return npmInstall(ctx, cwd) },
+		RunScript:          func(ctx context.Context, script string) error { return runNpmScript(ctx, cwd, script) },
+		Out:                os.Stderr,
+	}
+
+	return boot.Run(ctx, deps, flags)
+}
+
+// realPrereqDeps builds the prereq.Deps wired to real os/exec implementations.
+func realPrereqDeps(ctx context.Context) prereq.Deps {
+	return prereq.Deps{
+		OS:         runtime.GOOS,
+		HasCommand: func(name string) bool { _, err := exec.LookPath(name); return err == nil },
+		Version: func(name string) (string, error) {
+			out, err := exec.CommandContext(ctx, name, "--version").Output()
+			return strings.TrimSpace(string(out)), err
+		},
+		DaemonUp: func(ctx context.Context) bool {
+			return exec.CommandContext(ctx, "docker", "info").Run() == nil
+		},
+		Prompt: promptYesNo,
+		Run: func(ctx context.Context, name string, args ...string) error {
+			c := exec.CommandContext(ctx, name, args...)
+			c.Stdout = os.Stderr
+			c.Stderr = os.Stderr
+			c.Stdin = os.Stdin
+			return c.Run()
+		},
+		Out: os.Stderr,
+	}
+}
+
+// promptYesNo reads a y/N answer from stdin. It is TTY-gated: on a non-interactive
+// stdin it returns false (decline) so an unattended run never blocks or
+// auto-mutates the machine — pass --yes to opt in instead.
+func promptYesNo(question string) bool {
+	if !ui.IsStdinTTY() {
+		return false
+	}
+	fmt.Fprint(os.Stderr, question)
+	r := bufio.NewReader(os.Stdin)
+	line, err := r.ReadString('\n')
+	if err != nil {
+		return false
+	}
+	ans := strings.ToLower(strings.TrimSpace(line))
+	return ans == "y" || ans == "yes"
+}
+
+// readPackageScripts reads <dir>/package.json and returns its "scripts" object
+// as a name→command map. A missing package.json yields an empty map (boot.Run
+// reports the "no dev script" error), not an I/O failure.
+func readPackageScripts(dir string) (map[string]string, error) {
+	data, err := os.ReadFile(filepath.Join(dir, "package.json"))
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return map[string]string{}, nil
+		}
+		return nil, err
+	}
+	var pkg struct {
+		Scripts map[string]string `json:"scripts"`
+	}
+	if err := json.Unmarshal(data, &pkg); err != nil {
+		return nil, err
+	}
+	if pkg.Scripts == nil {
+		return map[string]string{}, nil
+	}
+	return pkg.Scripts, nil
+}
+
+// composeDBRunning reports whether a postgres or mysql service is currently up
+// under docker compose in dir. It is best-effort: any docker error means "no DB"
+// so migrations are skipped rather than run against an unreachable database.
+func composeDBRunning(ctx context.Context, dir string) bool {
+	cmd := exec.CommandContext(ctx, "docker", "compose", "ps", "--status", "running", "--services")
+	cmd.Dir = dir
+	out, err := cmd.Output()
+	if err != nil {
+		return false
+	}
+	for _, line := range strings.Split(string(out), "\n") {
+		switch strings.TrimSpace(line) {
+		case "postgres", "mysql":
+			return true
+		}
+	}
+	return false
+}
+
+// npmInstall runs `npm ci` when a lockfile is present (reproducible install),
+// else `npm install`. Output streams to stderr to keep stdout clean.
+func npmInstall(ctx context.Context, dir string) error {
+	sub := "install"
+	if fileExists(filepath.Join(dir, "package-lock.json")) {
+		sub = "ci"
+	}
+	cmd := exec.CommandContext(ctx, "npm", sub)
+	cmd.Dir = dir
+	cmd.Stdout = os.Stderr
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
+}
+
+// runNpmScript runs `npm run <script>` in dir. The "dev" script runs in the
+// foreground with stdin/stdout/stderr inherited (it is the app the user
+// interacts with). Every other script (e.g. "migrate") is captured so its
+// output can be folded into the wrapped error — boot.Run greps the message for
+// "connect" to distinguish a DB-connection failure from a schema failure.
+func runNpmScript(ctx context.Context, dir, script string) error {
+	cmd := exec.CommandContext(ctx, "npm", "run", script)
+	cmd.Dir = dir
+	if script == "dev" {
+		cmd.Stdin = os.Stdin
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		return cmd.Run()
+	}
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("%s: %s", err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+// fileExists reports whether path exists and is a regular file (or any
+// non-directory). dirExists reports whether path exists and is a directory.
+func fileExists(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && !info.IsDir()
+}
+
+func dirExists(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && info.IsDir()
+}
+
 // runEnvDispatch routes `keyto env <subcommand>` to the appropriate handler.
 // Currently only "sync" is supported.
 func runEnvDispatch(ctx context.Context, args []string) error {
@@ -223,33 +466,7 @@ func runEnvSync(ctx context.Context, args []string) error {
 	return envsync.Run(ctx, args, d)
 }
 
-// runDevImpl implements `keyto dev`: env sync then docker compose up.
-// The sync runs on the host first (it needs ~/.keyto/credentials and browser
-// auth, so it cannot run inside a container). The documented two-step
-// baseline is: keyto env sync && docker compose up
-func runDevImpl(ctx context.Context, args []string) error {
-	fmt.Fprintln(os.Stderr, "keyto dev: syncing env…")
-	if err := runEnvSync(ctx, []string{}); err != nil {
-		return fmt.Errorf("keyto dev: env sync: %w", err)
-	}
-
-	// `docker compose up` brings up the project's backing services (the profiles
-	// already in COMPOSE_PROFILES). The app itself runs on the host via `npm run
-	// dev` — the primary local-dev workflow. To containerise the app instead, run
-	// `docker compose --profile app up` directly.
-	fmt.Fprintln(os.Stderr, "keyto dev: starting docker compose…")
-	composeArgs := append([]string{"compose", "up"}, args...)
-	cmd := exec.CommandContext(ctx, "docker", composeArgs...)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	cmd.Stdin = os.Stdin
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("keyto dev: docker compose up: %w", err)
-	}
-	return nil
-}
-
-// emitProjectDir reports the resolved project directory after `keyto start`.
+// emitProjectDir reports the resolved project directory after `keyto checkout`.
 // Under shell integration (KEYTO_SHELL_INTEGRATION=1, exported by the wrapper
 // function) it prints ONLY the directory to stdout so the wrapper can cd into
 // it — every other message went to stderr. Without integration it prints a
@@ -340,12 +557,6 @@ var runUpdate = func() error {
 	return selfupdate.Run(context.Background(), version, os.Stdout)
 }
 
-// runDev is a package var so dispatch routing can be tested without performing
-// a real env sync or docker compose up.
-var runDev = func(ctx context.Context, args []string) error {
-	return runDevImpl(ctx, args)
-}
-
 // reuseCredential reports whether a stored credential makes a fresh login
 // unnecessary: it is non-nil, not expired, for the same Hub, and --force was
 // not given. Reusing it avoids minting a duplicate CLI token on every auth.
@@ -405,12 +616,14 @@ func printUsage() {
 	fmt.Println()
 	fmt.Println("Commands:")
 	fmt.Println("  auth        Authenticate with the Keyto Hub (reuses a valid credential; --force to re-issue)")
-	fmt.Println("  start       Clone and wire a Keyto project")
+	fmt.Println("  checkout    Clone and wire a Keyto project, then cd into it")
+	fmt.Println("  start       Boot the current project locally (prereqs, env sync, compose, migrate, npm run dev)")
+	fmt.Println("              Flags: --no-sync  --no-migrate  --no-install  --yes")
 	fmt.Println("  update      Update keyto to the latest release")
 	fmt.Println("  shell-init  Print the shell integration snippet (eval \"$(keyto shell-init)\")")
 	fmt.Println("  credential  Git credential helper")
 	fmt.Println("  env sync    Sync UAT secrets into .env for local docker-compose dev")
 	fmt.Println("              Flags: --env uat|prod  --out <file>  --print  --allow-prod")
-	fmt.Println("  dev         env sync + docker compose up (requires docker)")
+	fmt.Println("  dev         Deprecated alias for `keyto start`")
 	fmt.Println("  help        Show this help message")
 }
