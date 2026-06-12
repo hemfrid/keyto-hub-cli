@@ -47,6 +47,55 @@ func hubURL() string {
 
 var version = "dev"
 
+// authRun is a seam over auth.Run so tests can stub the browser login flow.
+var authRun = auth.Run
+
+// checkoutRun is a seam over checkout.Run so the auto-reauth retry path can be
+// tested without a real clone or network call.
+var checkoutRun = checkout.Run
+
+// bootRun is a seam over boot.Run so the auto-reauth retry path can be tested
+// without running a real local boot loop.
+var bootRun = boot.Run
+
+// isAuthError reports whether err looks like a server-side 401/Unauthorized.
+// The Hub client surfaces a non-200 status as `fmt.Errorf("...: %s", resp.Status)`,
+// so the error string contains "401" / "Unauthorized" — we match on that.
+func isAuthError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "401") || strings.Contains(strings.ToLower(msg), "unauthorized")
+}
+
+// reauth re-runs the browser login flow (always minting a fresh credential),
+// persists it, and returns the new creds. It is the single recovery path used
+// both up front (nil/expired creds) and on a server-side 401 during a command.
+// It is a package var so tests can stub it without launching a real browser.
+var reauth = func(ctx context.Context) (*config.Creds, error) {
+	fmt.Fprintln(os.Stderr, "your sign-in is no longer valid — re-authenticating in your browser…")
+	hub := hubURL()
+	tr, err := authRun(ctx, auth.Options{
+		HubURL:  hub,
+		OpenURL: browser.OpenURL,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("re-authentication failed: %w", err)
+	}
+	creds := &config.Creds{
+		Credential: tr.Credential,
+		HubURL:     hub,
+		UserEmail:  tr.UserEmail,
+		UserName:   tr.UserName,
+		ExpiresAt:  tr.ExpiresAt,
+	}
+	if err := config.Save(creds); err != nil {
+		return nil, fmt.Errorf("save credentials: %w", err)
+	}
+	return creds, nil
+}
+
 func main() {
 	if err := dispatch(os.Args[1:]); err != nil {
 		fmt.Fprintln(os.Stderr, "keyto:", err)
@@ -106,8 +155,9 @@ var runCheckout = func(ctx context.Context, args []string) error {
 }
 
 // runCheckoutImpl implements `keyto checkout [project]`.
-// It loads creds (nil if not authed — checkout.Run returns a helpful error in
-// that case), builds the real Deps wrappers, and delegates to checkout.Run.
+// It loads creds (nil/expired → re-auth up front), builds the Deps wrappers,
+// and delegates to checkout.Run. If the server rejects the credential with a
+// 401 mid-flow it re-auths in the browser and retries the run exactly once.
 func runCheckoutImpl(ctx context.Context, args []string) error {
 	// checkout needs git; guide the install (consent-gated) rather than just
 	// erroring on a missing binary. AutoYes:false — checkout is interactive.
@@ -125,17 +175,13 @@ func runCheckoutImpl(ctx context.Context, args []string) error {
 		}
 	}
 
-	// Friendly re-login (S4.3): a stored-but-expired credential would otherwise
-	// fail mid-flow with a cryptic error. Catch it up front with a clear hint.
-	if creds != nil && creds.Expired() {
-		return fmt.Errorf("your sign-in has expired — run `keyto auth` to sign in again")
-	}
-
-	var hubClient *hub.Client
-	if creds != nil {
-		hubClient = &hub.Client{
-			BaseURL:    creds.HubURL,
-			Credential: creds.Credential,
+	// Self-healing re-login (S4.3 / v0.3.2): a missing or stored-but-expired
+	// credential would otherwise fail mid-flow with a cryptic error. Re-auth in
+	// the browser up front so the user never has to run `keyto auth --force`.
+	if creds == nil || creds.Expired() {
+		creds, err = reauth(ctx)
+		if err != nil {
+			return err
 		}
 	}
 
@@ -149,7 +195,40 @@ func runCheckoutImpl(ctx context.Context, args []string) error {
 		projectArg = args[0]
 	}
 
-	d := checkout.Deps{
+	projectDir, err := checkoutRun(ctx, projectArg, checkoutDeps(ctx, creds, cwd))
+	if isAuthError(err) {
+		// The credential looked valid locally but the server rejected it
+		// (revoked/stale). Re-auth in the browser and retry exactly once.
+		creds, err = reauth(ctx)
+		if err != nil {
+			return err
+		}
+		projectDir, err = checkoutRun(ctx, projectArg, checkoutDeps(ctx, creds, cwd))
+	}
+	if err != nil {
+		return err
+	}
+	emitProjectDir(projectDir)
+	// Non-blocking heads-up: `keyto start` will also need Docker + Node 20.
+	// Detect-only here — never install or block during checkout.
+	if tip := startPrereqTip(realPrereqDeps(ctx)); tip != "" {
+		fmt.Fprintln(os.Stderr, tip)
+	}
+	return nil
+}
+
+// checkoutDeps builds the checkout.Deps wired to real os/exec/git
+// implementations for the given creds. It is extracted so the deps can be
+// rebuilt with a freshly-minted credential on the 401 retry path.
+func checkoutDeps(ctx context.Context, creds *config.Creds, cwd string) checkout.Deps {
+	var hubClient *hub.Client
+	if creds != nil {
+		hubClient = &hub.Client{
+			BaseURL:    creds.HubURL,
+			Credential: creds.Credential,
+		}
+	}
+	return checkout.Deps{
 		Creds: creds,
 		List: func(ctx context.Context) ([]hub.Project, error) {
 			if hubClient == nil {
@@ -176,18 +255,6 @@ func runCheckoutImpl(ctx context.Context, args []string) error {
 		In:          os.Stdin,
 		Out:         os.Stderr,
 	}
-
-	projectDir, err := checkout.Run(ctx, projectArg, d)
-	if err != nil {
-		return err
-	}
-	emitProjectDir(projectDir)
-	// Non-blocking heads-up: `keyto start` will also need Docker + Node 20.
-	// Detect-only here — never install or block during checkout.
-	if tip := startPrereqTip(realPrereqDeps(ctx)); tip != "" {
-		fmt.Fprintln(os.Stderr, tip)
-	}
-	return nil
 }
 
 // startPrereqTip detects (without installing or blocking) whether Docker and a
@@ -284,7 +351,27 @@ func runBootImpl(ctx context.Context, args []string) error {
 		return fmt.Errorf("start: get working directory: %w", err)
 	}
 
-	deps := boot.Deps{
+	// First run uses creds==nil — the env-sync step loads them from disk as it
+	// did before. If the Hub rejects the credential with a 401 (the only
+	// network-touching step in boot), re-auth in the browser and retry with the
+	// freshly-minted token threaded through, exactly once.
+	err = bootRun(ctx, bootDeps(ctx, cwd, flags, nil), flags)
+	if isAuthError(err) {
+		creds, rerr := reauth(ctx)
+		if rerr != nil {
+			return rerr
+		}
+		err = bootRun(ctx, bootDeps(ctx, cwd, flags, creds), flags)
+	}
+	return err
+}
+
+// bootDeps builds the boot.Deps wired to real os/exec implementations for cwd.
+// It is extracted so the deps can be rebuilt with a freshly-minted credential
+// on the 401 retry path. When creds is nil the env-sync step loads them from
+// disk (the original behaviour); on retry the minted token is threaded through.
+func bootDeps(ctx context.Context, cwd string, flags boot.Flags, creds *config.Creds) boot.Deps {
+	return boot.Deps{
 		HasMarker: func() bool {
 			m, _ := readMarker(cwd)
 			return m != nil
@@ -308,7 +395,7 @@ func runBootImpl(ctx context.Context, args []string) error {
 			}
 			return nil
 		},
-		EnvSync:       func(ctx context.Context) error { return runEnvSync(ctx, nil) },
+		EnvSync:       func(ctx context.Context) error { return runEnvSyncWithCreds(ctx, nil, creds) },
 		EnvFileExists: func() bool { return fileExists(filepath.Join(cwd, ".env")) },
 		HasCompose: func() bool {
 			return fileExists(filepath.Join(cwd, "docker-compose.yml")) ||
@@ -327,8 +414,6 @@ func runBootImpl(ctx context.Context, args []string) error {
 		RunScript:          func(ctx context.Context, script string) error { return runNpmScript(ctx, cwd, script) },
 		Out:                os.Stderr,
 	}
-
-	return boot.Run(ctx, deps, flags)
 }
 
 // realPrereqDeps builds the prereq.Deps wired to real os/exec implementations.
@@ -474,19 +559,30 @@ func runEnvDispatch(ctx context.Context, args []string) error {
 }
 
 // runEnvSync implements `keyto env sync [flags]`.
-// It loads creds, builds the real Deps, and delegates to envsync.Run.
+// It loads creds from disk, builds the real Deps, and delegates to envsync.Run.
 func runEnvSync(ctx context.Context, args []string) error {
-	creds, err := config.Load()
-	if err != nil {
-		if errors.Is(err, config.ErrNotAuthed) {
-			creds = nil // envsync.Run returns the helpful "run keyto auth" error
-		} else {
-			return fmt.Errorf("env sync: load config: %w", err)
-		}
-	}
+	return runEnvSyncWithCreds(ctx, args, nil)
+}
 
-	if creds != nil && creds.Expired() {
-		return fmt.Errorf("your sign-in has expired — run `keyto auth` to sign in again")
+// runEnvSyncWithCreds is the credential-injecting form of runEnvSync. When
+// creds is nil it loads them from disk (the standalone `keyto env sync` path);
+// when non-nil it uses the supplied credential — this is how `keyto start`
+// threads a freshly-minted token through after a 401 re-auth without round-tripping
+// back to disk.
+func runEnvSyncWithCreds(ctx context.Context, args []string, creds *config.Creds) error {
+	if creds == nil {
+		loaded, err := config.Load()
+		if err != nil {
+			if errors.Is(err, config.ErrNotAuthed) {
+				loaded = nil // envsync.Run returns the helpful "run keyto auth" error
+			} else {
+				return fmt.Errorf("env sync: load config: %w", err)
+			}
+		}
+		if loaded != nil && loaded.Expired() {
+			return fmt.Errorf("your sign-in has expired — run `keyto auth` to sign in again")
+		}
+		creds = loaded
 	}
 
 	cwd, err := os.Getwd()
