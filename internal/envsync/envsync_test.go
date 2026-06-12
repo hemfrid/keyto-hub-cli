@@ -90,6 +90,19 @@ func baseDeps(t *testing.T, dir string) envsync.Deps {
 	}
 }
 
+// envVal returns the value of KEY= from rendered .env content ("" if absent).
+// Per-project host ports are hashed from the project name, so tests assert
+// internal consistency (the URL uses the same port as the *_PORT var) rather
+// than a hard-coded number.
+func envVal(content, key string) string {
+	for _, line := range strings.Split(content, "\n") {
+		if strings.HasPrefix(line, key+"=") {
+			return strings.TrimPrefix(line, key+"=")
+		}
+	}
+	return ""
+}
+
 // ---- T1: missing project marker ----
 
 func TestRun_NoProjectMarker_Error(t *testing.T) {
@@ -204,13 +217,29 @@ func TestRun_GoldenEnvFile_AllHintTypes(t *testing.T) {
 	if !strings.Contains(content, "DATABASE_URL=postgres://") {
 		t.Error(".env missing DATABASE_URL postgres URL")
 	}
-	if !strings.Contains(content, "@127.0.0.1:5432/") {
-		t.Error("DATABASE_URL should point at 127.0.0.1:5432")
+
+	// Each project gets its OWN compose project (unique containers/volumes)
+	// instead of the shared `keyto-app` default.
+	if got := envVal(content, "COMPOSE_PROJECT_NAME"); got != "acme-web" {
+		t.Errorf("COMPOSE_PROJECT_NAME=%q, want acme-web; content:\n%s", got, content)
 	}
 
-	// Redis URL.
-	if !strings.Contains(content, "REDIS_URL=redis://127.0.0.1:6379") {
-		t.Errorf(".env missing REDIS_URL=redis://127.0.0.1:6379; content:\n%s", content)
+	// DATABASE_URL must use the SAME per-project host port written as POSTGRES_PORT.
+	pgPort := envVal(content, "POSTGRES_PORT")
+	if pgPort == "" {
+		t.Errorf(".env missing POSTGRES_PORT; content:\n%s", content)
+	}
+	if !strings.Contains(content, "@127.0.0.1:"+pgPort+"/") {
+		t.Errorf("DATABASE_URL should point at 127.0.0.1:%s (the POSTGRES_PORT); content:\n%s", pgPort, content)
+	}
+
+	// Redis URL must use the same per-project host port written as REDIS_PORT.
+	redisPort := envVal(content, "REDIS_PORT")
+	if redisPort == "" {
+		t.Errorf(".env missing REDIS_PORT; content:\n%s", content)
+	}
+	if got := envVal(content, "REDIS_URL"); got != "redis://127.0.0.1:"+redisPort {
+		t.Errorf("REDIS_URL=%q, want redis://127.0.0.1:%s; content:\n%s", got, redisPort, content)
 	}
 
 	// UAT key with real value.
@@ -294,9 +323,11 @@ func TestRun_PrintFlag_WritesToOutNotFile(t *testing.T) {
 		t.Error("--print must not write a file; .env was created")
 	}
 
-	// Output must go to Out.
-	if !strings.Contains(out.String(), "REDIS_URL=redis://127.0.0.1:6379") {
-		t.Errorf("--print output missing REDIS_URL; got:\n%s", out.String())
+	// Output must go to Out (port is per-project; assert URL ↔ REDIS_PORT consistency).
+	content := out.String()
+	redisPort := envVal(content, "REDIS_PORT")
+	if redisPort == "" || envVal(content, "REDIS_URL") != "redis://127.0.0.1:"+redisPort {
+		t.Errorf("--print output missing/inconsistent REDIS_URL vs REDIS_PORT (%q); got:\n%s", redisPort, content)
 	}
 }
 
@@ -334,8 +365,10 @@ func TestContainerURLs_Postgres(t *testing.T) {
 	if !strings.Contains(content, "PGHOST=127.0.0.1") {
 		t.Errorf("PGHOST should be 127.0.0.1; got:\n%s", content)
 	}
-	if !strings.Contains(content, "PGPORT=5432") {
-		t.Errorf("PGPORT should be 5432; got:\n%s", content)
+	// PGPORT must equal the per-project POSTGRES_PORT (the host port compose binds).
+	pgPort := envVal(content, "POSTGRES_PORT")
+	if pgPort == "" || envVal(content, "PGPORT") != pgPort {
+		t.Errorf("PGPORT must equal POSTGRES_PORT (%q); got PGPORT=%q\n%s", pgPort, envVal(content, "PGPORT"), content)
 	}
 }
 
@@ -364,8 +397,12 @@ func TestContainerURLs_MySQL(t *testing.T) {
 	if !strings.Contains(content, "MYSQL_URL=mysql://") {
 		t.Errorf("missing MYSQL_URL; got:\n%s", content)
 	}
-	if !strings.Contains(content, "@127.0.0.1:3306/") {
-		t.Errorf("MYSQL_URL should point at 127.0.0.1:3306; got:\n%s", content)
+	myPort := envVal(content, "MYSQL_PORT")
+	if myPort == "" {
+		t.Errorf("missing MYSQL_PORT; got:\n%s", content)
+	}
+	if !strings.Contains(content, "@127.0.0.1:"+myPort+"/") {
+		t.Errorf("MYSQL_URL should point at 127.0.0.1:%s (the MYSQL_PORT); got:\n%s", myPort, content)
 	}
 	if !strings.Contains(content, "MYSQL_DATABASE=shop") {
 		t.Errorf("MYSQL_DATABASE should be shop; got:\n%s", content)

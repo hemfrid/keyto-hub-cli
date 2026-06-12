@@ -338,6 +338,7 @@ func runBootImpl(ctx context.Context, args []string) error {
 	noMigrate := fs.Bool("no-migrate", false, "skip applying migrations")
 	noInstall := fs.Bool("no-install", false, "skip npm install even when node_modules is absent")
 	yes := fs.Bool("yes", false, "auto-confirm prerequisite installs")
+	noOpen := fs.Bool("no-open", false, "do not open the app in the browser when it's ready")
 	if err := fs.Parse(args); err != nil {
 		return fmt.Errorf("start: parse flags: %w", err)
 	}
@@ -346,6 +347,7 @@ func runBootImpl(ctx context.Context, args []string) error {
 		NoMigrate: *noMigrate,
 		NoInstall: *noInstall,
 		Yes:       *yes,
+		NoOpen:    *noOpen,
 	}
 
 	cwd, err := os.Getwd()
@@ -414,7 +416,10 @@ func bootDeps(ctx context.Context, cwd string, flags boot.Flags, creds *config.C
 		NodeModulesPresent: func() bool { return dirExists(filepath.Join(cwd, "node_modules")) },
 		Install:            func(ctx context.Context) error { return npmInstall(ctx, cwd) },
 		RunScript:          func(ctx context.Context, script string) error { return runNpmScript(ctx, cwd, script) },
-		Out:                os.Stderr,
+		// nil on CI / non-interactive shells (browserOpener returns nil) — boot
+		// then skips the open. --no-open is handled separately via flags.NoOpen.
+		OpenApp: browserOpener(),
+		Out:     os.Stderr,
 	}
 }
 

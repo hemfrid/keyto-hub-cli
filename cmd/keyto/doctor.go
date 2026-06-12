@@ -39,12 +39,31 @@ type doctorReport struct {
 }
 
 // diagnosticsPayload is the body POSTed to the Hub's /api/cli/diagnostics
-// ingest: the doctor report with the schema_version envelope field the contract
-// requires. Embedding doctorReport keeps the per-field json tags (ok/os/…)
-// identical to the --json output the Hub already understands.
+// ingest. It deliberately mirrors the Hub's STRICT schema (spec §6) field-for-
+// field and OMITS doctorReport's `ok`: the Hub derives overall_ok server-side
+// and its zod schema is .strict(), so any extra key (like `ok`) is rejected
+// with 422. This is a distinct shape from the --json doctorReport on purpose.
 type diagnosticsPayload struct {
-	SchemaVersion int `json:"schema_version"`
-	doctorReport
+	SchemaVersion int                  `json:"schema_version"`
+	CLIVersion    string               `json:"cli_version"`
+	OS            string               `json:"os"`
+	OSVersion     string               `json:"os_version,omitempty"`
+	Arch          string               `json:"arch,omitempty"`
+	Checks        []prereq.CheckResult `json:"checks"`
+}
+
+// buildDiagnosticsPayload assembles the Hub-contract upload body from the
+// diagnosed checks plus host/CLI metadata — the same data as the --json report
+// but without the `ok` field the strict Hub schema would reject.
+func buildDiagnosticsPayload(ctx context.Context, checks []prereq.CheckResult) diagnosticsPayload {
+	return diagnosticsPayload{
+		SchemaVersion: diagnosticsSchemaVersion,
+		CLIVersion:    version,
+		OS:            runtime.GOOS,
+		OSVersion:     osVersion(ctx),
+		Arch:          runtime.GOARCH,
+		Checks:        checks,
+	}
 }
 
 // osVersion is a seam over the real OS-version probe so runDoctor is testable
@@ -135,10 +154,7 @@ func maybeReportDoctor(ctx context.Context, checks []prereq.CheckResult, enabled
 		return
 	}
 
-	payload := diagnosticsPayload{
-		SchemaVersion: diagnosticsSchemaVersion,
-		doctorReport:  buildDoctorReport(ctx, checks),
-	}
+	payload := buildDiagnosticsPayload(ctx, checks)
 
 	if err := postDiagnostics(ctx, creds, payload); err != nil {
 		fmt.Fprintf(os.Stderr, "note: couldn't send setup report to the Hub: %v\n", err)

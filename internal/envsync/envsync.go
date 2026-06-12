@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"hash/fnv"
 	"io"
 	"os"
 	"path/filepath"
@@ -109,18 +110,72 @@ func defaultMySQLParams(projectName string) mysqlParams {
 	}
 }
 
+// composeNameRe strips characters Docker Compose forbids in a project name
+// (must match [a-z0-9_-]; must start with [a-z0-9]).
+var composeNameRe = regexp.MustCompile(`[^a-z0-9_-]`)
+
+// normalizeComposeProjectName turns a project name into a valid, project-unique
+// Docker Compose project name. This is what gives every locally-started project
+// its OWN containers + volumes + network instead of the shared `keyto-app`
+// default — so each project's POSTGRES_DB is created on its own fresh volume
+// (the shared volume only honors POSTGRES_DB on its first init, which is why a
+// second project saw "database does not exist").
+func normalizeComposeProjectName(name string) string {
+	s := composeNameRe.ReplaceAllString(strings.ToLower(name), "-")
+	s = strings.TrimLeft(s, "-_")
+	if s == "" {
+		s = "app"
+	}
+	return s
+}
+
+// servicePorts holds the per-project HOST ports the backing services bind. The
+// container-internal ports stay standard (5432/3306/6379); only the host side
+// is offset per project so two projects' stacks can run at once and a new
+// project never collides with another project's already-bound port.
+type servicePorts struct {
+	Postgres int
+	MySQL    int
+	Redis    int
+}
+
+// portOffset derives a stable 0..3999 offset from the project name. Same
+// project → same ports on every sync (so DATABASE_URL stays valid across runs);
+// different projects almost always differ. A rare collision surfaces as a
+// docker-compose "port already allocated" error, resolvable with a
+// POSTGRES_PORT override in .env.local.
+func portOffset(name string) int {
+	h := fnv.New32a()
+	_, _ = h.Write([]byte(name))
+	return int(h.Sum32() % 4000)
+}
+
+// defaultPorts returns the per-project host ports. The bases are chosen to be
+// memorable (15432≈pg 5432, 23306≈mysql 3306, 27000≈redis) and to occupy
+// non-overlapping unprivileged bands below the ephemeral range.
+func defaultPorts(projectName string) servicePorts {
+	off := portOffset(projectName)
+	return servicePorts{
+		Postgres: 15000 + off, // 15000–18999
+		MySQL:    23000 + off, // 23000–26999
+		Redis:    27000 + off, // 27000–30999
+	}
+}
+
 // buildContainerValue resolves the local value for a container-hinted key.
-// pg/mysql shared params are expected to already be computed by the caller.
-func buildContainerValue(key, service string, pg postgresParams, my mysqlParams) string {
+// pg/mysql shared params and the per-project host ports are computed by the
+// caller. The host URLs (127.0.0.1:<port>) MUST use the same per-project ports
+// the compose file binds via ${POSTGRES_PORT}/${REDIS_PORT}/${MYSQL_PORT}.
+func buildContainerValue(key, service string, pg postgresParams, my mysqlParams, ports servicePorts) string {
 	switch service {
 	case "postgres":
 		switch key {
 		case "DATABASE_URL":
-			return fmt.Sprintf("postgres://%s:%s@127.0.0.1:5432/%s", pg.User, pg.Password, pg.DB)
+			return fmt.Sprintf("postgres://%s:%s@127.0.0.1:%d/%s", pg.User, pg.Password, ports.Postgres, pg.DB)
 		case "PGHOST":
 			return "127.0.0.1"
 		case "PGPORT":
-			return "5432"
+			return fmt.Sprintf("%d", ports.Postgres)
 		case "PGUSER":
 			return pg.User
 		case "PGPASSWORD":
@@ -129,27 +184,29 @@ func buildContainerValue(key, service string, pg postgresParams, my mysqlParams)
 			return pg.DB
 		default:
 			// Unknown postgres key: return a placeholder URL
-			return fmt.Sprintf("postgres://%s:%s@127.0.0.1:5432/%s", pg.User, pg.Password, pg.DB)
+			return fmt.Sprintf("postgres://%s:%s@127.0.0.1:%d/%s", pg.User, pg.Password, ports.Postgres, pg.DB)
 		}
 	case "redis":
 		switch key {
 		case "REDIS_URL":
-			return "redis://127.0.0.1:6379"
+			return fmt.Sprintf("redis://127.0.0.1:%d", ports.Redis)
 		case "REDIS_HOST":
 			return "127.0.0.1"
 		case "REDIS_PORT":
-			return "6379"
+			return fmt.Sprintf("%d", ports.Redis)
 		case "REDIS_PASSWORD":
 			return ""
 		default:
-			return "redis://127.0.0.1:6379"
+			return fmt.Sprintf("redis://127.0.0.1:%d", ports.Redis)
 		}
 	case "mysql":
 		switch key {
 		case "MYSQL_URL":
-			return fmt.Sprintf("mysql://%s:%s@127.0.0.1:3306/%s", my.User, my.Password, my.Database)
+			return fmt.Sprintf("mysql://%s:%s@127.0.0.1:%d/%s", my.User, my.Password, ports.MySQL, my.Database)
 		case "MYSQL_HOST":
 			return "127.0.0.1"
+		case "MYSQL_PORT":
+			return fmt.Sprintf("%d", ports.MySQL)
 		case "MYSQL_USER":
 			return my.User
 		case "MYSQL_PASSWORD":
@@ -157,7 +214,7 @@ func buildContainerValue(key, service string, pg postgresParams, my mysqlParams)
 		case "MYSQL_DATABASE":
 			return my.Database
 		default:
-			return fmt.Sprintf("mysql://%s:%s@127.0.0.1:3306/%s", my.User, my.Password, my.Database)
+			return fmt.Sprintf("mysql://%s:%s@127.0.0.1:%d/%s", my.User, my.Password, ports.MySQL, my.Database)
 		}
 	default:
 		return ""
@@ -240,6 +297,11 @@ func renderEnv(
 	sb.WriteString(managedHeader)
 	sb.WriteString("\n")
 
+	// COMPOSE_PROJECT_NAME gives this project its own Docker compose project —
+	// unique containers, volumes and network — instead of the shared `keyto-app`
+	// default every project would otherwise collapse into.
+	sb.WriteString(fmt.Sprintf("COMPOSE_PROJECT_NAME=%s\n", normalizeComposeProjectName(projectName)))
+
 	profiles := inferProfiles(inv.Keys)
 	sb.WriteString("COMPOSE_PROFILES=")
 	sb.WriteString(strings.Join(profiles, ","))
@@ -247,6 +309,7 @@ func renderEnv(
 
 	pg := defaultPostgresParams(projectName)
 	my := defaultMySQLParams(projectName)
+	ports := defaultPorts(projectName)
 
 	// Shared postgres params block
 	if hasService(inv.Keys, "postgres") {
@@ -254,6 +317,7 @@ func renderEnv(
 		sb.WriteString(fmt.Sprintf("POSTGRES_USER=%s\n", pg.User))
 		sb.WriteString(fmt.Sprintf("POSTGRES_PASSWORD=%s\n", pg.Password))
 		sb.WriteString(fmt.Sprintf("POSTGRES_DB=%s\n", pg.DB))
+		sb.WriteString(fmt.Sprintf("POSTGRES_PORT=%d\n", ports.Postgres))
 		sb.WriteString("\n")
 	}
 
@@ -264,6 +328,14 @@ func renderEnv(
 		sb.WriteString(fmt.Sprintf("MYSQL_PASSWORD=%s\n", my.Password))
 		sb.WriteString(fmt.Sprintf("MYSQL_ROOT_PASSWORD=%s\n", my.RootPassword))
 		sb.WriteString(fmt.Sprintf("MYSQL_DATABASE=%s\n", my.Database))
+		sb.WriteString(fmt.Sprintf("MYSQL_PORT=%d\n", ports.MySQL))
+		sb.WriteString("\n")
+	}
+
+	// Redis/Dragonfly host port (both map ${REDIS_PORT:-6379} in compose).
+	if hasService(inv.Keys, "redis") || hasService(inv.Keys, "dragonfly") {
+		sb.WriteString("# Redis/Dragonfly host port\n")
+		sb.WriteString(fmt.Sprintf("REDIS_PORT=%d\n", ports.Redis))
 		sb.WriteString("\n")
 	}
 
@@ -282,7 +354,7 @@ func renderEnv(
 	if len(containerKeys) > 0 {
 		sb.WriteString("# Container-backed services (local URLs)\n")
 		for _, k := range containerKeys {
-			val := buildContainerValue(k.Key, k.Service, pg, my)
+			val := buildContainerValue(k.Key, k.Service, pg, my, ports)
 			sb.WriteString(fmt.Sprintf("%s=%s\n", k.Key, val))
 		}
 		sb.WriteString("\n")
