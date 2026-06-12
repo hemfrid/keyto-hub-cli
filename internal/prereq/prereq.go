@@ -54,9 +54,15 @@ type Deps struct {
 	Version    func(name string) (string, error) // e.g. `node --version` -> "v20.20.2"
 	DaemonUp   func(ctx context.Context) bool    // `docker info` succeeds
 	ComposeOK  func(ctx context.Context) bool    // `docker compose version` exits 0
-	Prompt     func(question string) bool        // y/N consent (false on non-TTY unless AutoYes)
-	Run        func(ctx context.Context, name string, args ...string) error
-	Out        io.Writer
+	// VirtualizationOK reports whether CPU virtualization is enabled. Consulted
+	// only on Windows (Diagnose) to distinguish a daemon that's down because the
+	// machine can't run Docker Desktop/WSL2 (virtualization disabled in BIOS/UEFI)
+	// from a daemon that's merely not started. The real impl shells out to
+	// PowerShell; on non-windows it is never called and may be nil.
+	VirtualizationOK func(ctx context.Context) bool
+	Prompt           func(question string) bool // y/N consent (false on non-TTY unless AutoYes)
+	Run              func(ctx context.Context, name string, args ...string) error
+	Out              io.Writer
 }
 
 // Opts wraps Deps + behavior flags.
@@ -165,6 +171,252 @@ func nodeVersionOK(v string) bool {
 		return false
 	}
 	return true
+}
+
+// Check status values. A check is "ok" when the tool is present and usable,
+// "missing" when the binary isn't found, "wrong_version" when present but
+// outside the supported range, and "blocked" when present-but-unusable for an
+// environmental reason (e.g. the Docker daemon is down).
+const (
+	StatusOK           = "ok"
+	StatusMissing      = "missing"
+	StatusWrongVersion = "wrong_version"
+	StatusBlocked      = "blocked"
+)
+
+// Fix-type tiers, ordered by how much agency the tool has to remediate:
+//   - auto:    keyto can run an install command itself (consent-gated).
+//   - command: a single copy-pasteable command the user runs (we don't auto-run,
+//     e.g. the Compose plugin is bundled, not safely scriptable).
+//   - manual:  a multi-step human action (reboot into BIOS, enable a setting).
+//   - none:    nothing to do (the check is ok).
+const (
+	FixAuto    = "auto"
+	FixCommand = "command"
+	FixManual  = "manual"
+	FixNone    = "none"
+)
+
+// CheckResult is one diagnosed prerequisite. Diagnose returns a slice of these;
+// the doctor command renders them (human + --json) and the Hub's
+// /api/cli/diagnostics ingests the JSON form. Field tags match that contract.
+type CheckResult struct {
+	Name    string `json:"name"`     // git, docker-engine, docker-daemon, docker-compose, node, inotify
+	Status  string `json:"status"`   // ok | missing | wrong_version | blocked
+	FixType string `json:"fix_type"` // auto | command | manual | none
+	Fix     string `json:"fix"`      // the remediation command/instruction ("" when ok)
+	Detail  string `json:"detail"`   // human context (version found, why blocked, …)
+}
+
+// IsBlocking reports whether a result represents an issue that should fail the
+// doctor run (anything not ok). Used to set the process exit code and the
+// top-level `ok` flag in the JSON form.
+func (r CheckResult) IsBlocking() bool { return r.Status != StatusOK }
+
+// Diagnose runs a DETECT-ONLY pass over the requested tools — it never installs
+// or mutates the machine. For each tool it classifies presence/version/daemon
+// state and attaches the remediation (Fix/FixType) derived from installMethod
+// (and OS-specific guidance for the daemon/compose cases). It reuses the same
+// detection seams as Ensure (HasCommand, Version, DaemonUp, ComposeOK).
+func Diagnose(ctx context.Context, want []Tool, o Opts) []CheckResult {
+	out := make([]CheckResult, 0, len(want))
+	for _, t := range want {
+		switch t {
+		case Git:
+			out = append(out, o.diagnoseSimple(Git, "git"))
+		case Node:
+			out = append(out, o.diagnoseNode())
+		case Docker:
+			out = append(out, o.diagnoseDockerEngine(), o.diagnoseDockerDaemon(ctx))
+		case DockerCompose:
+			out = append(out, o.diagnoseCompose(ctx))
+		}
+	}
+	return out
+}
+
+// diagnoseSimple classifies a binary that is either present (ok) or missing.
+// Used for git, which has no version gate or daemon.
+func (o Opts) diagnoseSimple(t Tool, name string) CheckResult {
+	if o.HasCommand(t.name()) {
+		v, _ := o.Version(t.name())
+		return CheckResult{Name: name, Status: StatusOK, FixType: FixNone, Detail: firstLine(v)}
+	}
+	desc, _, auto := o.installMethod(t)
+	return CheckResult{
+		Name:    name,
+		Status:  StatusMissing,
+		FixType: fixTypeFor(auto),
+		Fix:     desc,
+		Detail:  "not installed",
+	}
+}
+
+func (o Opts) diagnoseNode() CheckResult {
+	if !o.HasCommand("node") {
+		desc, _, auto := o.installMethod(Node)
+		return CheckResult{
+			Name:    "node",
+			Status:  StatusMissing,
+			FixType: fixTypeFor(auto),
+			Fix:     desc,
+			Detail:  fmt.Sprintf("not installed — keyto needs Node >=%d.%d <%d", nodeMinMajor, nodeMinMinor, nodeMaxMajor),
+		}
+	}
+	v, _ := o.Version("node")
+	if nodeVersionOK(v) {
+		return CheckResult{Name: "node", Status: StatusOK, FixType: FixNone, Detail: firstLine(v)}
+	}
+	desc, _, auto := o.installMethod(Node)
+	return CheckResult{
+		Name:    "node",
+		Status:  StatusWrongVersion,
+		FixType: fixTypeFor(auto),
+		Fix:     desc,
+		Detail:  fmt.Sprintf("%s is out of range — keyto needs Node >=%d.%d <%d", firstLine(v), nodeMinMajor, nodeMinMinor, nodeMaxMajor),
+	}
+}
+
+// diagnoseDockerEngine reports only on the docker binary's presence — the
+// daemon's state is a separate `docker-daemon` check.
+func (o Opts) diagnoseDockerEngine() CheckResult {
+	if o.HasCommand("docker") {
+		v, _ := o.Version("docker")
+		return CheckResult{Name: "docker-engine", Status: StatusOK, FixType: FixNone, Detail: firstLine(v)}
+	}
+	desc, _, auto := o.installMethod(Docker)
+	return CheckResult{
+		Name:    "docker-engine",
+		Status:  StatusMissing,
+		FixType: fixTypeFor(auto),
+		Fix:     desc,
+		Detail:  "not installed",
+	}
+}
+
+// diagnoseDockerDaemon reports whether the daemon is reachable. It is only
+// meaningful when the engine is present, so a missing engine yields a `blocked`
+// result that points at installing the engine first (no duplicate daemon noise).
+// On Windows, a down daemon with virtualization disabled is the "can't run
+// Docker at all" case — surfaced as a manual BIOS fix.
+func (o Opts) diagnoseDockerDaemon(ctx context.Context) CheckResult {
+	if !o.HasCommand("docker") {
+		desc, _, auto := o.installMethod(Docker)
+		return CheckResult{
+			Name:    "docker-daemon",
+			Status:  StatusBlocked,
+			FixType: fixTypeFor(auto),
+			Fix:     desc,
+			Detail:  "the docker engine isn't installed, so the daemon can't run",
+		}
+	}
+	if o.DaemonUp(ctx) {
+		return CheckResult{Name: "docker-daemon", Status: StatusOK, FixType: FixNone, Detail: "running"}
+	}
+	// Daemon down. On Windows, the common root cause is CPU virtualization being
+	// disabled in BIOS/UEFI — Docker Desktop/WSL2 cannot start at all. Detect it
+	// so we give the right (manual) fix instead of "just start Docker".
+	if o.OS == "windows" && o.VirtualizationOK != nil && !o.VirtualizationOK(ctx) {
+		return CheckResult{
+			Name:    "docker-daemon",
+			Status:  StatusBlocked,
+			FixType: FixManual,
+			Fix:     "reboot → BIOS/UEFI → enable Virtualization (Intel VT-x / AMD-V), save; then: wsl --install",
+			Detail:  "CPU virtualization disabled in BIOS/UEFI — Docker Desktop/WSL2 can't start. If you can't change BIOS (locked/managed machine), use the Keyto browser workspace instead.",
+		}
+	}
+	fix := "start Docker Desktop (or `colima start`)"
+	if o.OS == "darwin" && o.HasCommand("colima") {
+		fix = "colima start"
+	}
+	return CheckResult{
+		Name:    "docker-daemon",
+		Status:  StatusBlocked,
+		FixType: FixCommand,
+		Fix:     fix,
+		Detail:  "the Docker daemon is not running",
+	}
+}
+
+// diagnoseCompose checks the Compose v2 plugin. When docker itself is absent the
+// engine check already reports it, so compose returns ok-as-skipped (there is
+// nothing actionable here that the engine check doesn't already cover).
+func (o Opts) diagnoseCompose(ctx context.Context) CheckResult {
+	if !o.HasCommand("docker") {
+		return CheckResult{
+			Name:    "docker-compose",
+			Status:  StatusOK,
+			FixType: FixNone,
+			Detail:  "skipped — install the docker engine first",
+		}
+	}
+	if o.ComposeOK(ctx) {
+		return CheckResult{Name: "docker-compose", Status: StatusOK, FixType: FixNone, Detail: "plugin present"}
+	}
+	return CheckResult{
+		Name:    "docker-compose",
+		Status:  StatusMissing,
+		FixType: FixCommand, // bundled with the engine/Desktop — instruct, don't auto-run
+		Fix:     o.composeFix(),
+		Detail:  "the Compose v2 plugin (`docker compose`) is missing — `keyto start` runs `docker compose up`",
+	}
+}
+
+// composeFix is the OS-specific Compose-plugin remediation, mirroring the
+// guidance composeMissing() bakes into its error (kept in one place).
+func (o Opts) composeFix() string {
+	switch o.OS {
+	case "darwin":
+		return "brew install docker-compose (or reinstall Docker Desktop, which bundles it)"
+	case "linux":
+		if mgr := o.linuxMgr(); mgr != "" {
+			return mgr + " install -y docker-compose-plugin (or reinstall via https://get.docker.com, which includes the plugin)"
+		}
+		return "install the docker-compose-plugin package for your distro (or reinstall via https://get.docker.com)"
+	default: // windows + unmatched
+		return "reinstall Docker Desktop (it bundles the compose plugin)"
+	}
+}
+
+// fixTypeFor maps installMethod's auto bool to a fix tier: auto-capable installs
+// are FixAuto; instruct-only ones are FixCommand.
+func fixTypeFor(auto bool) string {
+	if auto {
+		return FixAuto
+	}
+	return FixCommand
+}
+
+// firstLine returns the first line of s trimmed of surrounding whitespace —
+// version output is sometimes multi-line, and the human/JSON detail wants one
+// concise line.
+func firstLine(s string) string {
+	s = strings.TrimSpace(s)
+	if i := strings.IndexByte(s, '\n'); i >= 0 {
+		return strings.TrimSpace(s[:i])
+	}
+	return s
+}
+
+// InotifyCheck mirrors InotifyWarning but as a CheckResult so the doctor command
+// can fold the Linux inotify advisory into its check list. ok when the limit is
+// healthy / not applicable; blocked (with a command fix) when it's low.
+func (o Opts) InotifyCheck(readFile func(path string) ([]byte, error)) CheckResult {
+	w := o.InotifyWarning(readFile)
+	if w == "" {
+		detail := "watch limit healthy"
+		if o.OS != "linux" {
+			detail = "not applicable (non-Linux)"
+		}
+		return CheckResult{Name: "inotify", Status: StatusOK, FixType: FixNone, Detail: detail}
+	}
+	return CheckResult{
+		Name:    "inotify",
+		Status:  StatusBlocked,
+		FixType: FixCommand,
+		Fix:     fmt.Sprintf("sudo sysctl fs.inotify.max_user_watches=%d", inotifyRecommendedWatches),
+		Detail:  "fs.inotify.max_user_watches is low — `next dev` hot reload may fail with ENOSPC",
+	}
 }
 
 // installMethod returns (description, command+args) for (os, pkgManager, tool),
