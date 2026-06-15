@@ -69,7 +69,7 @@ flows through the Keyto Hub to GitHub.
 ### `keyto doctor`
 
 `keyto doctor` runs the local prerequisite diagnostics on their own — **git, the
-Docker engine + daemon, the Docker Compose v2 plugin, and Node 20**. It is
+Docker engine + daemon, the Docker Compose v2 plugin, and Node 20+**. It is
 **detect-only** (it changes nothing without `--fix`) and classifies each issue by
 how it gets fixed:
 

@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 
 	"github.com/hemfrid/keyto-hub-cli/internal/auth"
@@ -211,7 +212,7 @@ func runCheckoutImpl(ctx context.Context, args []string) error {
 		return err
 	}
 	emitProjectDir(projectDir)
-	// Non-blocking heads-up: `keyto start` will also need Docker + Node 20.
+	// Non-blocking heads-up: `keyto start` will also need Docker + Node 20+.
 	// Detect-only here — never install or block during checkout.
 	if tip := startPrereqTip(realPrereqDeps(ctx)); tip != "" {
 		fmt.Fprintln(os.Stderr, tip)
@@ -269,19 +270,21 @@ func startPrereqTip(deps prereq.Deps) string {
 		missing = append(missing, "Docker")
 	}
 	if v, err := deps.Version("node"); err != nil || !deps.HasCommand("node") || !nodeVersionTipOK(v) {
-		missing = append(missing, "Node 20")
+		missing = append(missing, "Node 20+")
 	}
 	if len(missing) == 0 {
 		return ""
 	}
-	return fmt.Sprintf("tip: `keyto start` will also need Docker + Node 20 — missing: %s (run `keyto start` to install)", strings.Join(missing, ", "))
+	return fmt.Sprintf("tip: `keyto start` will also need Docker + Node 20+ — missing: %s (run `keyto start` to install)", strings.Join(missing, ", "))
 }
 
-// nodeVersionTipOK is the detect-only Node-20 check used by the checkout
-// heads-up. It accepts v20.x and is deliberately lenient (a heads-up, not a
-// gate): `keyto start`'s prereq.Ensure does the authoritative >=20.9 <21 check.
+// nodeVersionTipOK is the detect-only Node check used by the checkout heads-up.
+// It accepts any Node >=20 major and is deliberately lenient (a heads-up, not a
+// gate): `keyto start`'s prereq.Ensure does the authoritative >=20.9 check.
 func nodeVersionTipOK(v string) bool {
-	return strings.HasPrefix(strings.TrimSpace(v), "v20.") || strings.HasPrefix(strings.TrimSpace(v), "20.")
+	major, _, _ := strings.Cut(strings.TrimPrefix(strings.TrimSpace(v), "v"), ".")
+	n, err := strconv.Atoi(major)
+	return err == nil && n >= 20
 }
 
 // readMarker reads the keyto project marker from dir. It is a package var so

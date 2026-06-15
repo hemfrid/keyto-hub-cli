@@ -90,19 +90,20 @@ func TestDiagnose_MissingNode_NamesRangeAndFix(t *testing.T) {
 	if !strings.Contains(c.Detail, "20") {
 		t.Errorf("node detail should name the required range, got %q", c.Detail)
 	}
-	if !strings.Contains(c.Fix, "node@20") {
+	if !strings.Contains(c.Fix, "node@24") {
 		t.Errorf("node fix should name the brew install, got %q", c.Fix)
 	}
 }
 
 func TestDiagnose_WrongNodeVersion_Classified(t *testing.T) {
-	o := diagOpts("darwin", map[string]string{"node": "v22.3.0", "brew": ""}, true, true, nil)
+	// Below the >=20.9 floor → out of range (v22+ is now accepted).
+	o := diagOpts("darwin", map[string]string{"node": "v18.20.0", "brew": ""}, true, true, nil)
 	checks := Diagnose(context.Background(), []Tool{Node}, o)
 	c := findCheck(t, checks, "node")
 	if c.Status != StatusWrongVersion {
 		t.Fatalf("node status = %q, want wrong_version", c.Status)
 	}
-	if !strings.Contains(c.Detail, "v22.3.0") || !strings.Contains(c.Detail, "out of range") {
+	if !strings.Contains(c.Detail, "v18.20.0") || !strings.Contains(c.Detail, "out of range") {
 		t.Errorf("wrong-version detail should name the found version + range, got %q", c.Detail)
 	}
 	if c.Fix == "" {

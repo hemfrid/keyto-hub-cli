@@ -40,11 +40,14 @@ func (t Tool) name() string {
 	return "?"
 }
 
-// nodeMin/nodeMax mirror the template package.json engines: >=20.9 <21.
+// nodeMin mirrors the template package.json engines floor (>=20.9). There is no
+// upper bound: any newer Node major (22, 24, …) is accepted, so the gate keeps
+// pace with modern LTS lines without a re-bump each release. Keep the template
+// package.json engines in sync (drop its `<21` cap) or `npm install` inside a
+// booted project will warn with EBADENGINE.
 const (
 	nodeMinMajor = 20
 	nodeMinMinor = 9
-	nodeMaxMajor = 21 // exclusive
 )
 
 // Deps are the injected seams. main.go wires real implementations.
@@ -89,8 +92,8 @@ func ensureOne(ctx context.Context, t Tool, o Opts) error {
 			if nodeVersionOK(v) {
 				return nil
 			}
-			return fmt.Errorf("node %s is out of range — keyto needs Node >=%d.%d <%d. Fix with `nvm install 20 && nvm use 20` (or `brew install node@20`), then re-run",
-				v, nodeMinMajor, nodeMinMinor, nodeMaxMajor)
+			return fmt.Errorf("node %s is out of range — keyto needs Node >=%d.%d. Fix with `nvm install 24 && nvm use 24` (or `brew install node@24`), then re-run",
+				v, nodeMinMajor, nodeMinMinor)
 		}
 	case Docker:
 		if o.HasCommand("docker") {
@@ -164,7 +167,7 @@ func nodeVersionOK(v string) bool {
 	}
 	maj, _ := strconv.Atoi(m[1])
 	min, _ := strconv.Atoi(m[2])
-	if maj < nodeMinMajor || maj >= nodeMaxMajor {
+	if maj < nodeMinMajor {
 		return false
 	}
 	if maj == nodeMinMajor && min < nodeMinMinor {
@@ -260,7 +263,7 @@ func (o Opts) diagnoseNode() CheckResult {
 			Status:  StatusMissing,
 			FixType: fixTypeFor(auto),
 			Fix:     desc,
-			Detail:  fmt.Sprintf("not installed — keyto needs Node >=%d.%d <%d", nodeMinMajor, nodeMinMinor, nodeMaxMajor),
+			Detail:  fmt.Sprintf("not installed — keyto needs Node >=%d.%d", nodeMinMajor, nodeMinMinor),
 		}
 	}
 	v, _ := o.Version("node")
@@ -273,7 +276,7 @@ func (o Opts) diagnoseNode() CheckResult {
 		Status:  StatusWrongVersion,
 		FixType: fixTypeFor(auto),
 		Fix:     desc,
-		Detail:  fmt.Sprintf("%s is out of range — keyto needs Node >=%d.%d <%d", firstLine(v), nodeMinMajor, nodeMinMinor, nodeMaxMajor),
+		Detail:  fmt.Sprintf("%s is out of range — keyto needs Node >=%d.%d", firstLine(v), nodeMinMajor, nodeMinMinor),
 	}
 }
 
@@ -434,9 +437,9 @@ func (o Opts) installMethod(t Tool) (desc string, cmd []string, auto bool) {
 			return "install Homebrew (https://brew.sh), then: brew install colima docker", nil, false
 		case Node:
 			if o.HasCommand("brew") {
-				return "brew install node@20", []string{"brew", "install", "node@20"}, true
+				return "brew install node@24", []string{"brew", "install", "node@24"}, true
 			}
-			return "install Homebrew (https://brew.sh), then: brew install node@20", nil, false
+			return "install Homebrew (https://brew.sh), then: brew install node@24", nil, false
 		}
 	case "linux":
 		mgr := o.linuxMgr()
@@ -450,14 +453,14 @@ func (o Opts) installMethod(t Tool) (desc string, cmd []string, auto bool) {
 			return "Docker Engine (get.docker.com)", []string{"sh", "-c", "curl -fsSL https://get.docker.com | sh"}, true
 		case Node:
 			// Distro `apt/dnf install nodejs` usually lands a Node older than
-			// 20, which keyto rejects. Use the NodeSource v20 setup script on
+			// 20, which keyto rejects. Use the NodeSource v24 setup script on
 			// apt-based distros; on dnf, point at NodeSource's rpm setup too.
 			if mgr == "apt-get" {
-				return "Node 20 via NodeSource (deb.nodesource.com)",
-					[]string{"sh", "-c", "curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash - && sudo apt-get install -y nodejs"}, true
+				return "Node 24 via NodeSource (deb.nodesource.com)",
+					[]string{"sh", "-c", "curl -fsSL https://deb.nodesource.com/setup_24.x | sudo -E bash - && sudo apt-get install -y nodejs"}, true
 			}
-			return "Node 20 via NodeSource (rpm.nodesource.com)",
-				[]string{"sh", "-c", "curl -fsSL https://rpm.nodesource.com/setup_20.x | sudo -E bash - && sudo " + mgr + " install -y nodejs"}, true
+			return "Node 24 via NodeSource (rpm.nodesource.com)",
+				[]string{"sh", "-c", "curl -fsSL https://rpm.nodesource.com/setup_24.x | sudo -E bash - && sudo " + mgr + " install -y nodejs"}, true
 		}
 	}
 	// windows + anything unmatched: instruct only.

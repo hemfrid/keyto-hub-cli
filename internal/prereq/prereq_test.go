@@ -43,7 +43,8 @@ func TestEnsure_AllPresent_NoInstall(t *testing.T) {
 }
 
 func TestEnsure_WrongNodeVersion_GuidesAndErrors(t *testing.T) {
-	d, ran := fakeEnv(map[string]string{"git": "2.40", "docker": "27", "node": "v22.3.0"}, true, true, nil)
+	// Below the >=20.9 floor: too old, so it must error without installing.
+	d, ran := fakeEnv(map[string]string{"git": "2.40", "docker": "27", "node": "v18.20.0"}, true, true, nil)
 	d.Out = &bytes.Buffer{}
 	err := Ensure(context.Background(), []Tool{Node}, Opts{Deps: *d})
 	if err == nil {
@@ -54,6 +55,19 @@ func TestEnsure_WrongNodeVersion_GuidesAndErrors(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "20") {
 		t.Fatalf("error should name the required range: %v", err)
+	}
+}
+
+// A modern Node major (above the original <21 cap) is now in range: Ensure must
+// accept it silently and never install/downgrade.
+func TestEnsure_ModernNodeAccepted(t *testing.T) {
+	d, ran := fakeEnv(map[string]string{"git": "2.40", "docker": "27", "node": "v24.2.0"}, true, true, nil)
+	d.Out = &bytes.Buffer{}
+	if err := Ensure(context.Background(), []Tool{Node}, Opts{Deps: *d}); err != nil {
+		t.Fatalf("modern Node should be accepted, got: %v", err)
+	}
+	if len(*ran) != 0 {
+		t.Fatalf("must NOT install over an in-range Node, ran: %v", *ran)
 	}
 }
 
@@ -232,7 +246,7 @@ func TestEnsure_DaemonDown_ComposeCheckStillPasses(t *testing.T) {
 	}
 }
 
-func TestInstallMethod_LinuxNode_UsesNodeSourceV20(t *testing.T) {
+func TestInstallMethod_LinuxNode_UsesNodeSourceV24(t *testing.T) {
 	d, _ := fakeEnv(map[string]string{"apt-get": ""}, false, true, nil)
 	d.OS = "linux"
 	o := Opts{Deps: *d}
@@ -241,8 +255,8 @@ func TestInstallMethod_LinuxNode_UsesNodeSourceV20(t *testing.T) {
 		t.Fatalf("linux node install should be auto-capable, got auto=%v cmd=%v", auto, cmd)
 	}
 	joined := strings.Join(cmd, " ")
-	if !strings.Contains(joined, "deb.nodesource.com/setup_20.x") {
-		t.Fatalf("apt node install must use NodeSource v20, got: %s", joined)
+	if !strings.Contains(joined, "deb.nodesource.com/setup_24.x") {
+		t.Fatalf("apt node install must use NodeSource v24, got: %s", joined)
 	}
 	if !strings.Contains(joined, "apt-get install -y nodejs") {
 		t.Fatalf("apt node install must install nodejs after the setup script, got: %s", joined)
@@ -256,7 +270,7 @@ func TestInstallMethod_LinuxNode_UsesNodeSourceV20(t *testing.T) {
 	}
 }
 
-func TestInstallMethod_LinuxNode_Dnf_UsesNodeSourceV20(t *testing.T) {
+func TestInstallMethod_LinuxNode_Dnf_UsesNodeSourceV24(t *testing.T) {
 	d, _ := fakeEnv(map[string]string{"dnf": ""}, false, true, nil)
 	d.OS = "linux"
 	o := Opts{Deps: *d}
@@ -265,8 +279,8 @@ func TestInstallMethod_LinuxNode_Dnf_UsesNodeSourceV20(t *testing.T) {
 		t.Fatal("dnf node install should be auto-capable")
 	}
 	joined := strings.Join(cmd, " ")
-	if !strings.Contains(joined, "rpm.nodesource.com/setup_20.x") || !strings.Contains(joined, "dnf install -y nodejs") {
-		t.Fatalf("dnf node install must use NodeSource v20 rpm setup, got: %s", joined)
+	if !strings.Contains(joined, "rpm.nodesource.com/setup_24.x") || !strings.Contains(joined, "dnf install -y nodejs") {
+		t.Fatalf("dnf node install must use NodeSource v24 rpm setup, got: %s", joined)
 	}
 }
 

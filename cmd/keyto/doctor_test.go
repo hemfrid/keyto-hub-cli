@@ -77,7 +77,7 @@ func okChecks() []prereq.CheckResult {
 func mixedChecks() []prereq.CheckResult {
 	return []prereq.CheckResult{
 		{Name: "git", Status: prereq.StatusOK, FixType: prereq.FixNone, Detail: "git version 2.40"},
-		{Name: "node", Status: prereq.StatusMissing, FixType: prereq.FixAuto, Fix: "brew install node@20", Detail: "not installed"},
+		{Name: "node", Status: prereq.StatusMissing, FixType: prereq.FixAuto, Fix: "brew install node@24", Detail: "not installed"},
 		{Name: "docker-compose", Status: prereq.StatusMissing, FixType: prereq.FixCommand, Fix: "brew install docker-compose", Detail: "plugin missing"},
 		{Name: "docker-daemon", Status: prereq.StatusBlocked, FixType: prereq.FixManual, Fix: "reboot → BIOS/UEFI → enable Virtualization", Detail: "virtualization disabled"},
 	}
@@ -180,7 +180,7 @@ func TestPrintDoctorHuman_FixLinesAndTally(t *testing.T) {
 	}
 	// Each non-ok check renders an indented fix line tagged with its tier.
 	for _, want := range []string{
-		"fix [auto] brew install node@20",
+		"fix [auto] brew install node@24",
 		"fix [command] brew install docker-compose",
 		"fix [manual] reboot → BIOS/UEFI → enable Virtualization",
 	} {
