@@ -78,3 +78,7 @@ func TestDefaultBranchFallsBackToLocalHeads(t *testing.T) {
 		t.Errorf("DefaultBranch = %q, want main", got)
 	}
 }
+
+func gitCmd(root string, args ...string) *exec.Cmd {
+	return exec.Command("git", append([]string{"-C", root}, args...)...)
+}
