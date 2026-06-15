@@ -45,6 +45,11 @@ func TestStartPrereqTip(t *testing.T) {
 			wantEmpty: true,
 		},
 		{
+			name:      "docker and modern node24 present → no tip",
+			present:   map[string]string{"docker": "27", "node": "v24.2.0"},
+			wantEmpty: true,
+		},
+		{
 			name:        "docker missing → tip names Docker",
 			present:     map[string]string{"node": "v20.11.0"},
 			wantMissing: []string{"Docker"},
@@ -87,8 +92,8 @@ func TestStartPrereqTip(t *testing.T) {
 }
 
 func TestNodeVersionTipOK(t *testing.T) {
-	ok := []string{"v20.0.0", "v20.11.0", "20.9.0"}
-	notOK := []string{"v18.19.0", "v21.0.0", "v19.9.0", "", "garbage"}
+	ok := []string{"v20.0.0", "v20.11.0", "20.9.0", "v21.0.0", "v22.3.0", "v24.2.0"}
+	notOK := []string{"v18.19.0", "v19.9.0", "", "garbage"}
 	for _, v := range ok {
 		if !nodeVersionTipOK(v) {
 			t.Errorf("nodeVersionTipOK(%q) = false, want true", v)
