@@ -134,6 +134,19 @@ func TestInitRefusesWhenAlreadyInstalled(t *testing.T) {
 	}
 }
 
+// withTag wraps a Meta func, overriding the advertised release tag.
+func withTag(inner func(context.Context) (*hub.AIBundleMeta, error), tag string) func(context.Context) (*hub.AIBundleMeta, error) {
+	return func(ctx context.Context) (*hub.AIBundleMeta, error) {
+		m, err := inner(ctx)
+		if err != nil {
+			return nil, err
+		}
+		m.Tag = tag
+		m.Manifest.Tag = tag
+		return m, nil
+	}
+}
+
 // gitCommitAll stages and commits everything in the test repo.
 func gitCommitAll(t *testing.T, root string) {
 	t.Helper()
