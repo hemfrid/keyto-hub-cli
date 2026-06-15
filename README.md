@@ -91,6 +91,38 @@ to be walked through the fixes (plus a fixability tally). Flags:
 `keyto start` runs the same checks as part of its preflight, so `keyto doctor` is
 mainly for diagnosing a machine before (or instead of) booting a project.
 
+### `keyto ai`
+
+`keyto ai` installs and keeps up to date the **AI capabilities bundle** — the
+shared set of Claude Code agents, skills, hooks, and rules that every Keyto
+project inherits. Content is relayed by the Hub (`/api/ai-bundle`); no GitHub
+access is needed.
+
+```sh
+keyto ai init     # install the bundle into the current repo (first time)
+keyto ai update   # pull a newer bundle release, preserving local edits
+keyto ai status   # check whether the installed bundle is up to date
+```
+
+**`keyto ai init`** — installs the bundle into the repo you're standing in.
+Requires a clean working tree (commit or stash first) so the whole install
+lands as one reviewable diff. Existing files at any bundle path are **left
+untouched** — the install never overwrites project-local work. After it
+completes, review the diff with `git diff`, commit it, then open Claude Code
+and run `/setup` to adapt the capabilities to this project's stack, commands,
+and issue tracker. A partial install is fully recoverable with `git restore .`.
+
+**`keyto ai update`** — pulls the latest bundle release and applies it using the
+**conffile model**: only bundle files whose on-disk content still matches the
+pinned post-install hash are updated — locally edited files are never clobbered.
+Files removed from the upstream bundle that you haven't touched are deleted; files
+you've edited that disappear upstream become project-owned. Requires a clean
+working tree. After the command completes, review and commit the diff.
+
+**`keyto ai status`** — shows the installed bundle tag, whether a newer release is
+available, and which bundle files have been locally modified or deleted since
+install. No network write; read-only.
+
 > **Renamed:** clone+wire moved from `keyto start` to **`keyto checkout`**;
 > `keyto start` is now the local boot loop. `keyto start <name>` and the old
 > `keyto dev` still work for now but print a deprecation notice. After upgrading,
