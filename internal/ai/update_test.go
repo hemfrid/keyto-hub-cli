@@ -121,6 +121,38 @@ func TestUpdateUpToDate(t *testing.T) {
 	}
 }
 
+func TestUpdateSkipsExistingUnpinnedFile(t *testing.T) {
+	root := initTestRepo(t)
+	// Write the file before init so Init skips it (not pinned).
+	preexisting := []byte("# my local new-rule\n")
+	if err := os.MkdirAll(filepath.Join(root, ".claude/rules"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, ".claude/rules/new-rule.md"), preexisting, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCommitAll(t, root)
+	if _, err := Init(context.Background(), root, fakeDeps(t, bundleFixture())); err != nil {
+		t.Fatal(err)
+	}
+	gitCommitAll(t, root)
+
+	// v2 ships new-rule.md; our file is not pinned, so it must be left alone.
+	d := fakeDeps(t, v2Fixture())
+	d.Meta = withTag(d.Meta, "v0.3.0")
+	res, err := Update(context.Background(), root, d)
+	if err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	if len(res.SkippedExisting) != 1 || res.SkippedExisting[0] != ".claude/rules/new-rule.md" {
+		t.Fatalf("SkippedExisting = %v", res.SkippedExisting)
+	}
+	got, _ := os.ReadFile(filepath.Join(root, ".claude/rules/new-rule.md"))
+	if string(got) != string(preexisting) {
+		t.Error("unpinned existing file was overwritten")
+	}
+}
+
 func TestUpdateRequiresInstallAndCleanTree(t *testing.T) {
 	root := initTestRepo(t)
 	if _, err := Update(context.Background(), root, fakeDeps(t, bundleFixture())); err == nil {

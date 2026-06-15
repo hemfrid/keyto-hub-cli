@@ -118,6 +118,8 @@ func Update(ctx context.Context, root string, d Deps) (*UpdateResult, error) {
 				}
 				res.Updated = append(res.Updated, p)
 			}
+			// When newHash == pinnedHash the content is unchanged: no write,
+			// no Updated entry — just keep the file tracked at the same hash.
 			newPinned = append(newPinned, PinnedFile{Path: p, SHA256: newHash})
 
 		default: // locally modified — never clobber; baseline stays at install hash
