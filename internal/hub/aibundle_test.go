@@ -54,6 +54,17 @@ func TestAIBundleMetaUnauthorized(t *testing.T) {
 	}
 }
 
+func TestAIBundleTarballUnauthorized(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer srv.Close()
+	c := &Client{BaseURL: srv.URL, Credential: "expired"}
+	if _, err := c.AIBundleTarball(context.Background(), "v0.2.0"); err == nil {
+		t.Error("expected error on 401")
+	}
+}
+
 func TestAIBundleTarball(t *testing.T) {
 	var gotQuery string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
