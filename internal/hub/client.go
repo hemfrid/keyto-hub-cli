@@ -6,7 +6,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
+	"net/url"
 	"time"
 )
 
@@ -237,4 +239,78 @@ func (c *Client) PostDiagnostics(ctx context.Context, payload any) error {
 		return fmt.Errorf("diagnostics post failed: %s", resp.Status)
 	}
 	return nil
+}
+
+// ── AI bundle (keyto ai init/update/status) ─────────────────────
+
+type AIBundleManifestFile struct {
+	Path   string `json:"path"`
+	SHA256 string `json:"sha256"`
+}
+
+type AIBundleManifest struct {
+	Tag              string                 `json:"tag"`
+	SourceSHA        string                 `json:"source_sha"`
+	ManifestCommit   string                 `json:"manifest_commit"`
+	FrameworkVersion string                 `json:"framework_version"`
+	Files            []AIBundleManifestFile `json:"files"`
+}
+
+type AIBundleMeta struct {
+	Tag         string           `json:"tag"`
+	PublishedAt string           `json:"publishedAt"`
+	SourceRepo  string           `json:"sourceRepo"`
+	Manifest    AIBundleManifest `json:"manifest"`
+}
+
+// AIBundleMeta fetches the latest general-bundle release metadata (tag +
+// file manifest) from the Hub relay.
+func (c *Client) AIBundleMeta(ctx context.Context) (*AIBundleMeta, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.BaseURL+"/api/ai-bundle/meta", nil)
+	if err != nil {
+		return nil, fmt.Errorf("build ai-bundle meta request: %w", err)
+	}
+	if c.Credential != "" {
+		req.Header.Set("Authorization", "Bearer "+c.Credential)
+	}
+	resp, err := c.httpClient().Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("ai-bundle meta request: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusUnauthorized {
+		return nil, fmt.Errorf("ai-bundle meta: unauthorized — run 'keyto auth'")
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("ai-bundle meta failed: %s", resp.Status)
+	}
+	var m AIBundleMeta
+	if err := json.NewDecoder(resp.Body).Decode(&m); err != nil {
+		return nil, fmt.Errorf("decode ai-bundle meta: %w", err)
+	}
+	return &m, nil
+}
+
+// AIBundleTarball downloads the bundle tarball for a specific release tag.
+func (c *Client) AIBundleTarball(ctx context.Context, tag string) ([]byte, error) {
+	u := c.BaseURL + "/api/ai-bundle?tag=" + url.QueryEscape(tag)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return nil, fmt.Errorf("build ai-bundle request: %w", err)
+	}
+	if c.Credential != "" {
+		req.Header.Set("Authorization", "Bearer "+c.Credential)
+	}
+	resp, err := c.httpClient().Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("ai-bundle request: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusUnauthorized {
+		return nil, fmt.Errorf("ai-bundle: unauthorized — run 'keyto auth'")
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("ai-bundle download failed: %s", resp.Status)
+	}
+	return io.ReadAll(resp.Body)
 }
