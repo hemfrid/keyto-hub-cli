@@ -61,7 +61,7 @@ func TestPinIsLineGreppable(t *testing.T) {
 	for _, key := range []string{"install_channel: cli", "manifest_commit: def456", "fetched_at:"} {
 		found := false
 		for _, line := range strings.Split(string(raw), "\n") {
-			if strings.HasPrefix(line, strings.SplitN(key, ":", 2)[0]+":") && strings.Contains(line, strings.TrimSpace(strings.SplitN(key, ":", 2)[1])) {
+			if strings.HasPrefix(line, key) {
 				found = true
 				break
 			}

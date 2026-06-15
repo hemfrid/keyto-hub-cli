@@ -74,7 +74,23 @@ func SavePin(repoRoot string, p *Pin) error {
 	if err := enc.Close(); err != nil {
 		return fmt.Errorf("ai: encode pin: %w", err)
 	}
-	if err := os.WriteFile(filepath.Join(repoRoot, PinPath), buf.Bytes(), 0o644); err != nil {
+	tmp, err := os.CreateTemp(dir, ".skills-bundle-*.yaml")
+	if err != nil {
+		return fmt.Errorf("ai: write pin: %w", err)
+	}
+	tmpName := tmp.Name()
+	defer func() { _ = os.Remove(tmpName) }() // no-op after a successful rename
+	if _, err := tmp.Write(buf.Bytes()); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("ai: write pin: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("ai: write pin: %w", err)
+	}
+	if err := os.Chmod(tmpName, 0o644); err != nil {
+		return fmt.Errorf("ai: write pin: %w", err)
+	}
+	if err := os.Rename(tmpName, filepath.Join(repoRoot, PinPath)); err != nil {
 		return fmt.Errorf("ai: write pin: %w", err)
 	}
 	return nil
