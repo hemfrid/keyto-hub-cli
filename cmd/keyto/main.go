@@ -143,6 +143,9 @@ func dispatch(args []string) error {
 		return runCredential(args)
 	case "env":
 		return runEnvDispatch(context.Background(), args[1:])
+	case "ai":
+		selfupdate.MaybeNotify(version, ui.IsStderrTTY(), os.Stderr)
+		return runAIDispatch(context.Background(), args[1:])
 	case "dev":
 		fmt.Fprintln(os.Stderr, "note: 'keyto dev' is deprecated — use 'keyto start'. Compose passthrough args are ignored.")
 		return runBoot(context.Background(), nil)
@@ -781,6 +784,7 @@ func printUsage() {
 	fmt.Println("  credential  Git credential helper")
 	fmt.Println("  env sync    Sync UAT secrets into .env for local docker-compose dev")
 	fmt.Println("              Flags: --env uat|prod  --out <file>  --print  --allow-prod")
+	fmt.Println("  ai [init|update|status]   Install / update the AI capabilities bundle in this repo")
 	fmt.Println("  dev         Deprecated alias for `keyto start`")
 	fmt.Println("  help        Show this help message")
 }
