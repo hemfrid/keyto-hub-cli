@@ -92,7 +92,7 @@ func Init(ctx context.Context, root string, d Deps) (*InitResult, error) {
 			return nil, fmt.Errorf("ai: mkdir for %s: %w", p, err)
 		}
 		if err := os.WriteFile(dst, content, fileMode(p)); err != nil {
-			return nil, fmt.Errorf("ai: write %s: %w", p, err)
+			return nil, fmt.Errorf("ai: write %s: %w (run 'git clean -fd' to discard the partial install, then retry)", p, err)
 		}
 		pinned = append(pinned, PinnedFile{Path: p, SHA256: sha256Hex(content)})
 		res.Written = append(res.Written, p)

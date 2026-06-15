@@ -43,7 +43,7 @@ func TestInitInstallsBundleAndWritesPin(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Init: %v", err)
 	}
-	if len(res.Written) != 4 || len(res.Skipped) != 0 {
+	if len(res.Written) != len(bundleFixture()) || len(res.Skipped) != 0 {
 		t.Fatalf("written=%v skipped=%v", res.Written, res.Skipped)
 	}
 
