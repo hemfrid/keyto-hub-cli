@@ -1,4 +1,4 @@
-// Package envset implements `keyto env set` — upserting env vars in UAT/PROD
+// Package envset implements `keyto env set` - upserting env vars in UAT/PROD
 // via the Hub. It is the write counterpart to package envsync.
 package envset
 
@@ -21,12 +21,13 @@ type Setter func(ctx context.Context, org, repo, env string, values map[string]s
 
 // Deps holds the injectable dependencies for Run.
 type Deps struct {
-	Creds   *config.Creds                      // nil → not authenticated
-	Cwd     string                             // dir containing .keyto/project.json
-	Set     Setter                             // Hub write call
-	Prompt  func(label string) (string, error) // hidden value prompt (bare-key form)
-	Confirm func(msg string) bool              // prod y/N; nil → skip (non-TTY)
-	Out     io.Writer                          // status line
+	Creds   *config.Creds                                                       // nil -> not authenticated
+	Cwd     string                                                              // dir containing .keyto/project.json
+	Set     Setter                                                              // Hub write call
+	Resolve func(ctx context.Context, app string) (org, repo string, err error) // map --app name -> org/repo
+	Prompt  func(label string) (string, error)                                  // hidden value prompt (bare-key form)
+	Confirm func(msg string) bool                                               // prod y/N; nil -> skip (non-TTY)
+	Out     io.Writer                                                           // status line
 }
 
 var keyRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
@@ -39,12 +40,13 @@ func Run(ctx context.Context, args []string, d Deps) error {
 	fs.SetOutput(io.Discard)
 	targetEnv := fs.String("env", "uat", "target environment (uat|prod)")
 	allowProd := fs.Bool("allow-prod", false, "required to use --env prod")
+	app := fs.String("app", "", "target another project by name instead of the current checkout")
 	if err := fs.Parse(args); err != nil {
 		return fmt.Errorf("env set: parse flags: %w", err)
 	}
 
 	if d.Creds == nil {
-		return fmt.Errorf("not authenticated — run `keyto auth`")
+		return fmt.Errorf("not authenticated - run `keyto auth`")
 	}
 
 	env := *targetEnv
@@ -57,7 +59,7 @@ func Run(ctx context.Context, args []string, d Deps) error {
 
 	rest := fs.Args()
 	if len(rest) == 0 {
-		return fmt.Errorf("env set: nothing to set — usage: keyto env set KEY=VALUE [KEY2=VALUE2 ...]")
+		return fmt.Errorf("env set: nothing to set - usage: keyto env set KEY=VALUE [KEY2=VALUE2 ...]")
 	}
 
 	values, err := parseAssignments(rest, d.Prompt)
@@ -65,12 +67,27 @@ func Run(ctx context.Context, args []string, d Deps) error {
 		return err
 	}
 
-	marker, err := project.Read(d.Cwd)
-	if err != nil {
-		return fmt.Errorf("env set: read project marker: %w", err)
-	}
-	if marker == nil {
-		return fmt.Errorf("env set: no .keyto/project.json found — run `keyto checkout` first")
+	// Resolve the target project. --app <name> targets another project (looked
+	// up by name via Resolve) and works from anywhere; without it we read the
+	// .keyto/project.json marker of the current checkout.
+	var org, repo string
+	if *app != "" {
+		if d.Resolve == nil {
+			return fmt.Errorf("env set: --app needs authentication - run `keyto auth`")
+		}
+		org, repo, err = d.Resolve(ctx, *app)
+		if err != nil {
+			return err
+		}
+	} else {
+		marker, merr := project.Read(d.Cwd)
+		if merr != nil {
+			return fmt.Errorf("env set: read project marker: %w", merr)
+		}
+		if marker == nil {
+			return fmt.Errorf("env set: no .keyto/project.json found - run `keyto checkout` first, or pass --app <name>")
+		}
+		org, repo = marker.Org, marker.Repo
 	}
 
 	keys := sortedKeys(values)
@@ -82,7 +99,7 @@ func Run(ctx context.Context, args []string, d Deps) error {
 		}
 	}
 
-	if _, err := d.Set(ctx, marker.Org, marker.Repo, env, values); err != nil {
+	if _, err := d.Set(ctx, org, repo, env, values); err != nil {
 		return fmt.Errorf("env set: %w", err)
 	}
 
@@ -107,10 +124,10 @@ func parseAssignments(args []string, prompt func(string) (string, error)) (map[s
 		}
 	}
 	if len(bare) > 0 && hasPair {
-		return nil, fmt.Errorf("env set: cannot mix KEY=VALUE pairs with a bare KEY — pass either all assignments or a single key to be prompted")
+		return nil, fmt.Errorf("env set: cannot mix KEY=VALUE pairs with a bare KEY - pass either all assignments or a single key to be prompted")
 	}
 	if len(bare) > 1 {
-		return nil, fmt.Errorf("env set: only one key may be set via prompt at a time — use KEY=VALUE for several")
+		return nil, fmt.Errorf("env set: only one key may be set via prompt at a time - use KEY=VALUE for several")
 	}
 
 	values := map[string]string{}

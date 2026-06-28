@@ -601,9 +601,24 @@ func runEnvSet(ctx context.Context, args []string) error {
 	}
 
 	var setter envset.Setter
+	var resolve func(ctx context.Context, app string) (string, string, error)
 	if creds != nil {
 		hubClient := &hub.Client{BaseURL: creds.HubURL, Credential: creds.Credential}
 		setter = hubClient.SetEnvValues
+		// --app <name>: find the project by exact name in the user's project list
+		// and use its org/repo (the same name match `keyto checkout` uses).
+		resolve = func(ctx context.Context, app string) (string, string, error) {
+			projects, err := hubClient.ListProjects(ctx)
+			if err != nil {
+				return "", "", fmt.Errorf("env set: list projects: %w", err)
+			}
+			for _, p := range projects {
+				if p.Name == app {
+					return p.Org, p.Repo, nil
+				}
+			}
+			return "", "", fmt.Errorf("env set: app %q not found among your projects - run `keyto checkout` to see them", app)
+		}
 	}
 
 	var confirm func(string) bool
@@ -615,6 +630,7 @@ func runEnvSet(ctx context.Context, args []string) error {
 		Creds:   creds,
 		Cwd:     cwd,
 		Set:     setter,
+		Resolve: resolve,
 		Prompt:  promptSecret,
 		Confirm: confirm,
 		Out:     os.Stdout,
@@ -847,7 +863,7 @@ func printUsage() {
 	fmt.Println("              Flags: --env uat|prod  --out <file>  --print  --allow-prod")
 	fmt.Println("  env set     Set/update env vars in UAT or PROD via the Hub")
 	fmt.Println("              Usage: keyto env set KEY=VALUE [KEY2=VALUE2 ...]  |  keyto env set KEY (prompts)")
-	fmt.Println("              Flags: --env uat|prod  --allow-prod")
+	fmt.Println("              Flags: --env uat|prod  --allow-prod  --app <name> (target another project)")
 	fmt.Println("  ai [init|update|status]   Install / update the AI capabilities bundle in this repo")
 	fmt.Println("  dev         Deprecated alias for `keyto start`")
 	fmt.Println("  help        Show this help message")
