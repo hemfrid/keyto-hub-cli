@@ -22,6 +22,7 @@ import (
 	"github.com/hemfrid/keyto-hub-cli/internal/checkout"
 	"github.com/hemfrid/keyto-hub-cli/internal/config"
 	"github.com/hemfrid/keyto-hub-cli/internal/credential"
+	"github.com/hemfrid/keyto-hub-cli/internal/envset"
 	"github.com/hemfrid/keyto-hub-cli/internal/envsync"
 	"github.com/hemfrid/keyto-hub-cli/internal/gitwire"
 	"github.com/hemfrid/keyto-hub-cli/internal/hub"
@@ -30,6 +31,7 @@ import (
 	"github.com/hemfrid/keyto-hub-cli/internal/selfupdate"
 	"github.com/hemfrid/keyto-hub-cli/internal/shellinit"
 	"github.com/hemfrid/keyto-hub-cli/internal/ui"
+	"golang.org/x/term"
 )
 
 // defaultHubURL is the production Hub.  Override with KEYTO_HUB_URL.
@@ -564,12 +566,71 @@ func dirExists(path string) bool {
 }
 
 // runEnvDispatch routes `keyto env <subcommand>` to the appropriate handler.
-// Currently only "sync" is supported.
 func runEnvDispatch(ctx context.Context, args []string) error {
 	if len(args) == 0 || args[0] == "sync" {
 		return runEnvSync(ctx, args[1:])
 	}
-	return fmt.Errorf("unknown env subcommand: %s — try `keyto env sync`", args[0])
+	switch args[0] {
+	case "set":
+		return runEnvSet(ctx, args[1:])
+	default:
+		return fmt.Errorf("unknown env subcommand: %s — try `keyto env sync` or `keyto env set`", args[0])
+	}
+}
+
+// runEnvSet implements `keyto env set [flags] KEY=VALUE... | KEY`.
+// It loads creds (errors on expired, like env sync), builds a hub.Client, and
+// delegates to envset.Run. The prod y/N confirm is wired only on a TTY — on a
+// non-interactive stdin --allow-prod alone is the gate (don't block scripts).
+func runEnvSet(ctx context.Context, args []string) error {
+	creds, err := config.Load()
+	if err != nil {
+		if errors.Is(err, config.ErrNotAuthed) {
+			creds = nil // envset.Run returns the helpful "run keyto auth" error
+		} else {
+			return fmt.Errorf("env set: load config: %w", err)
+		}
+	}
+	if creds != nil && creds.Expired() {
+		return fmt.Errorf("your sign-in has expired — run `keyto auth` to sign in again")
+	}
+
+	cwd, err := os.Getwd()
+	if err != nil {
+		return fmt.Errorf("env set: get working directory: %w", err)
+	}
+
+	var setter envset.Setter
+	if creds != nil {
+		hubClient := &hub.Client{BaseURL: creds.HubURL, Credential: creds.Credential}
+		setter = hubClient.SetEnvValues
+	}
+
+	var confirm func(string) bool
+	if ui.IsStdinTTY() {
+		confirm = promptYesNo
+	}
+
+	return envset.Run(ctx, args, envset.Deps{
+		Creds:   creds,
+		Cwd:     cwd,
+		Set:     setter,
+		Prompt:  promptSecret,
+		Confirm: confirm,
+		Out:     os.Stdout,
+	})
+}
+
+// promptSecret reads a value from the terminal with echo disabled. The label
+// and trailing newline go to stderr so stdout stays clean.
+func promptSecret(label string) (string, error) {
+	fmt.Fprint(os.Stderr, label)
+	b, err := term.ReadPassword(int(os.Stdin.Fd()))
+	fmt.Fprintln(os.Stderr)
+	if err != nil {
+		return "", err
+	}
+	return string(b), nil
 }
 
 // runEnvSync implements `keyto env sync [flags]`.
@@ -784,6 +845,9 @@ func printUsage() {
 	fmt.Println("  credential  Git credential helper")
 	fmt.Println("  env sync    Sync UAT secrets into .env for local docker-compose dev")
 	fmt.Println("              Flags: --env uat|prod  --out <file>  --print  --allow-prod")
+	fmt.Println("  env set     Set/update env vars in UAT or PROD via the Hub")
+	fmt.Println("              Usage: keyto env set KEY=VALUE [KEY2=VALUE2 ...]  |  keyto env set KEY (prompts)")
+	fmt.Println("              Flags: --env uat|prod  --allow-prod")
 	fmt.Println("  ai [init|update|status]   Install / update the AI capabilities bundle in this repo")
 	fmt.Println("  dev         Deprecated alias for `keyto start`")
 	fmt.Println("  help        Show this help message")
