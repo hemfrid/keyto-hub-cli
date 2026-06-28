@@ -331,6 +331,66 @@ func TestFetchEnvValues_ContextCancellation(t *testing.T) {
 	}
 }
 
+// ---- SetEnvValues ----
+
+func TestSetEnvValues_Success(t *testing.T) {
+	var gotMethod, gotPath, gotAuth string
+	var gotBody struct {
+		Values map[string]string `json:"values"`
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod, gotPath, gotAuth = r.Method, r.URL.Path, r.Header.Get("Authorization")
+		raw, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(raw, &gotBody)
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{"env": "uat", "updated": []string{"API_KEY"}})
+	}))
+	defer srv.Close()
+
+	c := &hub.Client{BaseURL: srv.URL, Credential: "tok_xyz"}
+	updated, err := c.SetEnvValues(context.Background(), "hemfrid", "acme-web", "uat",
+		map[string]string{"API_KEY": "sk-123"})
+	if err != nil {
+		t.Fatalf("SetEnvValues() error = %v", err)
+	}
+	if gotMethod != http.MethodPut {
+		t.Errorf("method = %q, want PUT", gotMethod)
+	}
+	wantPath := "/api/cli/projects/hemfrid/acme-web/env/uat/values"
+	if gotPath != wantPath {
+		t.Errorf("path = %q, want %q", gotPath, wantPath)
+	}
+	if gotAuth != "Bearer tok_xyz" {
+		t.Errorf("Authorization = %q, want Bearer tok_xyz", gotAuth)
+	}
+	if gotBody.Values["API_KEY"] != "sk-123" {
+		t.Errorf("request body values = %v", gotBody.Values)
+	}
+	if len(updated) != 1 || updated[0] != "API_KEY" {
+		t.Errorf("updated = %v, want [API_KEY]", updated)
+	}
+}
+
+func TestSetEnvValues_Non2xx_ReturnsError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte("secret detail that must not leak"))
+	}))
+	defer srv.Close()
+
+	c := &hub.Client{BaseURL: srv.URL, Credential: "tok"}
+	_, err := c.SetEnvValues(context.Background(), "o", "r", "prod", map[string]string{"K": "V"})
+	if err == nil {
+		t.Fatal("expected error on 403, got nil")
+	}
+	if !strings.Contains(err.Error(), "403") {
+		t.Errorf("error should reference 403, got: %v", err)
+	}
+	if strings.Contains(err.Error(), "secret detail") {
+		t.Errorf("error must not leak response body: %v", err)
+	}
+}
+
 // ---- PostDiagnostics ----
 
 func TestPostDiagnostics_Success(t *testing.T) {

@@ -199,6 +199,65 @@ func (c *Client) FetchEnvValues(
 	return fr.Values, fr.Missing, nil
 }
 
+// setEnvValuesRequest / setEnvValuesResponse are the bodies for the env write
+// endpoint. Binding contract (proposed, mirrors FetchEnvValues):
+//
+//	PUT /api/cli/projects/{org}/{repo}/env/{env}/values
+//	Request:  { "values": { "KEY": "VALUE", ... } }
+//	Response: { "env": "uat", "updated": ["KEY", ...] }
+type setEnvValuesRequest struct {
+	Values map[string]string `json:"values"`
+}
+
+type setEnvValuesResponse struct {
+	Env     string   `json:"env"`
+	Updated []string `json:"updated"`
+}
+
+// SetEnvValues upserts env vars in the given environment via the Hub and returns
+// the keys the Hub reports as updated. Non-2xx returns an error with the HTTP
+// status but never the raw body (to avoid leaking error details). Values are
+// never logged.
+func (c *Client) SetEnvValues(
+	ctx context.Context,
+	org, repo, env string,
+	values map[string]string,
+) (updated []string, err error) {
+	body, err := json.Marshal(setEnvValuesRequest{Values: values})
+	if err != nil {
+		return nil, fmt.Errorf("set-env-values: marshal request: %w", err)
+	}
+
+	endpoint := fmt.Sprintf("%s/api/cli/projects/%s/%s/env/%s/values", c.BaseURL, org, repo, env)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut, endpoint, bytes.NewReader(body))
+	if err != nil {
+		return nil, fmt.Errorf("set-env-values: build request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if c.Credential != "" {
+		req.Header.Set("Authorization", "Bearer "+c.Credential)
+	}
+
+	resp, err := c.httpClient().Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("set-env-values: request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		return nil, fmt.Errorf("set-env-values failed: %s", resp.Status)
+	}
+
+	var sr setEnvValuesResponse
+	if err := json.NewDecoder(resp.Body).Decode(&sr); err != nil {
+		return nil, fmt.Errorf("set-env-values: decode response: %w", err)
+	}
+	if sr.Updated == nil {
+		sr.Updated = []string{}
+	}
+	return sr.Updated, nil
+}
+
 // PostDiagnostics uploads a doctor report to the Hub's diagnostics ingest so it
 // surfaces in /admin/diagnostics.
 //
