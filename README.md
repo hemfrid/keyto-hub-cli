@@ -66,6 +66,32 @@ The everyday loop is **`keyto checkout <project>` → `keyto start`**:
 Then edit locally (with Claude Code, your editor, whatever) and `git push` — it
 flows through the Keyto Hub to GitHub.
 
+### `keyto env set`
+
+The write counterpart to `keyto env sync`: create or update environment
+variables in **UAT** or **PROD** through the Hub (upsert — new keys are created,
+existing ones overwritten). Run it from inside a checked-out project (it reads
+`.keyto/project.json` for the org/repo).
+
+```sh
+keyto env set API_KEY=sk-123                 # set one var in UAT (default)
+keyto env set A=1 B=2                         # set several at once
+keyto env set API_KEY                         # value omitted → hidden prompt
+keyto env set DB_URL=... --env prod --allow-prod   # PROD requires --allow-prod
+```
+
+- **Value input:** pass `KEY=VALUE` inline, or a bare `KEY` to be prompted for
+  the value with no echo. The split is on the first `=` only, so values that
+  contain `=` (base64, connection strings) are preserved. You can't mix inline
+  pairs and a prompted key in one call.
+- **PROD safety:** `--env prod` requires `--allow-prod`, and on a terminal you
+  get a y/N confirmation listing the keys (never the values) before anything is
+  written.
+- **Heads-up:** values passed inline land in your shell history — prefer the
+  bare-key prompt form for secrets.
+
+> Requires a Hub build that serves `PUT /api/cli/projects/{org}/{repo}/env/{env}/values`.
+
 ### `keyto doctor`
 
 `keyto doctor` runs the local prerequisite diagnostics on their own — **git, the
