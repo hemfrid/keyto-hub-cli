@@ -76,14 +76,19 @@ existing ones overwritten). Run it from inside a checked-out project (it reads
 ```sh
 keyto env set API_KEY=sk-123                 # set one var in UAT (default)
 keyto env set A=1 B=2                         # set several at once
-keyto env set API_KEY                         # value omitted → hidden prompt
+keyto env set API_KEY                         # value omitted -> hidden prompt
 keyto env set DB_URL=... --env prod --allow-prod   # PROD requires --allow-prod
+keyto env set API_KEY=sk-123 --app other-app # target a different project
 ```
 
 - **Value input:** pass `KEY=VALUE` inline, or a bare `KEY` to be prompted for
   the value with no echo. The split is on the first `=` only, so values that
   contain `=` (base64, connection strings) are preserved. You can't mix inline
   pairs and a prompted key in one call.
+- **Target project:** by default the project is the checkout you're in
+  (`.keyto/project.json`). Pass `--app <name>` to target another project by name
+  (resolved against your project list, the same names `keyto checkout` shows).
+  With `--app` the command works from any directory, even outside a checkout.
 - **PROD safety:** `--env prod` requires `--allow-prod`, and on a terminal you
   get a y/N confirmation listing the keys (never the values) before anything is
   written.
