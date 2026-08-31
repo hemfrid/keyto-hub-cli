@@ -456,6 +456,372 @@ func TestRun_RewireInPlace_ReturnsCwd(t *testing.T) {
 	}
 }
 
+// T15: picker selection whose org/repo matches cwd's git origin → adopt in
+// place (accept default Y): marker written to cwd, Wire on cwd, no clone,
+// returns cwd.
+func TestRun_Picker_CwdOriginMatches_AdoptsInPlace(t *testing.T) {
+	cloneCalled := false
+	var markerDir string
+	var wiredDir string
+
+	d := checkout.Deps{
+		Creds: makeCreds(),
+		List:  fakeList(twoProjects()),
+		Clone: func(repoURL, dir string) error { cloneCalled = true; return nil },
+		Wire: func(dir string, m *project.Marker, email, name string) error {
+			wiredDir = dir
+			return nil
+		},
+		ReadMarker: fakeReadMarker(nil),
+		WriteMarker: func(dir string, m *project.Marker) error {
+			markerDir = dir
+			return nil
+		},
+		OriginURL: func(dir string) (string, error) {
+			return "https://github.com/hemfrid/acme-web.git", nil
+		},
+		Toplevel: func(dir string) (string, error) { return "/tmp/acme-web", nil },
+		Cwd:      "/tmp/acme-web",
+		// "1" → pick acme-web; "" → accept adopt prompt (default yes)
+		In:  strings.NewReader("1\n\n"),
+		Out: &bytes.Buffer{},
+	}
+
+	dir, err := checkout.Run(context.Background(), "", d)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cloneCalled {
+		t.Error("Clone must not be called when adopting an existing checkout")
+	}
+	if markerDir != "/tmp/acme-web" {
+		t.Errorf("WriteMarker dir = %q, want /tmp/acme-web", markerDir)
+	}
+	if wiredDir != "/tmp/acme-web" {
+		t.Errorf("Wire dir = %q, want /tmp/acme-web", wiredDir)
+	}
+	if dir != "/tmp/acme-web" {
+		t.Errorf("returned dir = %q, want /tmp/acme-web", dir)
+	}
+}
+
+// T16: adopt prompt declined ("n") → falls through to prompt-dir + clone.
+func TestRun_Picker_AdoptDeclined_FallsThroughToClone(t *testing.T) {
+	var clonedDir string
+
+	d := checkout.Deps{
+		Creds:       makeCreds(),
+		List:        fakeList(twoProjects()),
+		Clone:       func(repoURL, dir string) error { clonedDir = dir; return nil },
+		Wire:        noopWire,
+		ReadMarker:  fakeReadMarker(nil),
+		WriteMarker: noopWriteMarker,
+		OriginURL: func(dir string) (string, error) {
+			return "https://github.com/hemfrid/acme-web.git", nil
+		},
+		Toplevel: func(dir string) (string, error) { return "/tmp/acme-web", nil },
+		Cwd:      "/tmp/acme-web",
+		// "1" → pick acme-web; "n" → decline adopt; "" → accept default clone dir
+		In:  strings.NewReader("1\nn\n\n"),
+		Out: &bytes.Buffer{},
+	}
+
+	_, err := checkout.Run(context.Background(), "", d)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if clonedDir != "/tmp/acme-web/acme-web" {
+		t.Errorf("Clone dir = %q, want /tmp/acme-web/acme-web", clonedDir)
+	}
+}
+
+// T17: cwd origin points at a different repo → no adopt prompt, straight to clone.
+func TestRun_Picker_OriginMismatch_NoAdoptPrompt(t *testing.T) {
+	cloneCalled := false
+	var out bytes.Buffer
+
+	d := checkout.Deps{
+		Creds:       makeCreds(),
+		List:        fakeList(twoProjects()),
+		Clone:       func(repoURL, dir string) error { cloneCalled = true; return nil },
+		Wire:        noopWire,
+		ReadMarker:  fakeReadMarker(nil),
+		WriteMarker: noopWriteMarker,
+		OriginURL: func(dir string) (string, error) {
+			return "https://github.com/other-org/other-repo.git", nil
+		},
+		Toplevel: func(dir string) (string, error) { return "/tmp/cwd", nil },
+		Cwd:      "/tmp/cwd",
+		// "1" → pick acme-web; "" → accept default clone dir (no adopt prompt in between)
+		In:  strings.NewReader("1\n\n"),
+		Out: &out,
+	}
+
+	_, err := checkout.Run(context.Background(), "", d)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !cloneCalled {
+		t.Error("Clone should be called when cwd origin does not match")
+	}
+	if strings.Contains(out.String(), "already a checkout") {
+		t.Error("adopt prompt must not be shown on origin mismatch")
+	}
+}
+
+// T18: cwd is not a git repo (OriginURL errors) → straight to clone.
+func TestRun_Picker_CwdNotGitRepo_Clones(t *testing.T) {
+	cloneCalled := false
+
+	d := checkout.Deps{
+		Creds:       makeCreds(),
+		List:        fakeList(twoProjects()),
+		Clone:       func(repoURL, dir string) error { cloneCalled = true; return nil },
+		Wire:        noopWire,
+		ReadMarker:  fakeReadMarker(nil),
+		WriteMarker: noopWriteMarker,
+		OriginURL: func(dir string) (string, error) {
+			return "", errors.New("not a git repository")
+		},
+		Toplevel: func(dir string) (string, error) { return "", errors.New("not a git repository") },
+		Cwd:      "/tmp/cwd",
+		In:       strings.NewReader("1\n\n"),
+		Out:      &bytes.Buffer{},
+	}
+
+	_, err := checkout.Run(context.Background(), "", d)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !cloneCalled {
+		t.Error("Clone should be called when cwd is not a git repo")
+	}
+}
+
+// T19: explicit project arg (no cwd marker) with matching origin → adopt in place.
+func TestRun_ProjectArg_CwdOriginMatches_AdoptsInPlace(t *testing.T) {
+	cloneCalled := false
+	var markerDir string
+
+	d := checkout.Deps{
+		Creds:      makeCreds(),
+		List:       fakeList(twoProjects()),
+		Clone:      func(repoURL, dir string) error { cloneCalled = true; return nil },
+		Wire:       noopWire,
+		ReadMarker: fakeReadMarker(nil),
+		WriteMarker: func(dir string, m *project.Marker) error {
+			markerDir = dir
+			return nil
+		},
+		// SSH-form origin must also match.
+		OriginURL: func(dir string) (string, error) {
+			return "git@github.com:hemfrid/acme-web.git", nil
+		},
+		Toplevel: func(dir string) (string, error) { return "/tmp/acme-web", nil },
+		Cwd:      "/tmp/acme-web",
+		In:       strings.NewReader("y\n"),
+		Out:      &bytes.Buffer{},
+	}
+
+	dir, err := checkout.Run(context.Background(), "acme-web", d)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cloneCalled {
+		t.Error("Clone must not be called when adopting an existing checkout")
+	}
+	if markerDir != "/tmp/acme-web" {
+		t.Errorf("WriteMarker dir = %q, want /tmp/acme-web", markerDir)
+	}
+	if dir != "/tmp/acme-web" {
+		t.Errorf("returned dir = %q, want /tmp/acme-web", dir)
+	}
+}
+
+// T20: adoption writes a marker carrying the selected project's identity and
+// the creds' Hub URL (Wire uses it to point origin at the Hub proxy).
+func TestRun_Adopt_MarkerHasProjectIdentity(t *testing.T) {
+	var got *project.Marker
+	cloneCalled := false
+
+	d := checkout.Deps{
+		Creds:      makeCreds(),
+		List:       fakeList(twoProjects()),
+		Clone:      func(repoURL, dir string) error { cloneCalled = true; return nil },
+		Wire:       noopWire,
+		ReadMarker: fakeReadMarker(nil),
+		WriteMarker: func(dir string, m *project.Marker) error {
+			got = m
+			return nil
+		},
+		OriginURL: func(dir string) (string, error) {
+			return "https://hub.example.com/git/hemfrid/beta-api.git", nil
+		},
+		Toplevel: func(dir string) (string, error) { return "/tmp/beta-api", nil },
+		Cwd:      "/tmp/beta-api",
+		// "2" → pick beta-api; "y" → adopt
+		In:  strings.NewReader("2\ny\n"),
+		Out: &bytes.Buffer{},
+	}
+
+	_, err := checkout.Run(context.Background(), "", d)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cloneCalled {
+		t.Error("Clone must not be called when adopting an existing checkout")
+	}
+	if got == nil {
+		t.Fatal("WriteMarker was not called")
+	}
+	if got.Name != "beta-api" || got.Org != "hemfrid" || got.Repo != "beta-api" || got.HubURL != "https://hub.example.com" {
+		t.Errorf("marker = %+v, want beta-api/hemfrid/beta-api @ https://hub.example.com", got)
+	}
+}
+
+// T21: cwd is a subdirectory of a matching checkout (origin resolves via the
+// enclosing repo, but the git toplevel is the parent) → no adopt prompt, no
+// marker in the subdirectory, straight to the clone flow.
+func TestRun_Picker_CwdIsSubdirOfCheckout_NoAdoptPrompt(t *testing.T) {
+	cloneCalled := false
+	var markerDir string
+	var out bytes.Buffer
+
+	d := checkout.Deps{
+		Creds:      makeCreds(),
+		List:       fakeList(twoProjects()),
+		Clone:      func(repoURL, dir string) error { cloneCalled = true; return nil },
+		Wire:       noopWire,
+		ReadMarker: fakeReadMarker(nil),
+		WriteMarker: func(dir string, m *project.Marker) error {
+			markerDir = dir
+			return nil
+		},
+		OriginURL: func(dir string) (string, error) {
+			return "https://github.com/hemfrid/acme-web.git", nil
+		},
+		Toplevel: func(dir string) (string, error) { return "/tmp/acme-web", nil },
+		Cwd:      "/tmp/acme-web/src",
+		// "1" → pick acme-web; "" → accept default clone dir (no adopt prompt in between)
+		In:  strings.NewReader("1\n\n"),
+		Out: &out,
+	}
+
+	_, err := checkout.Run(context.Background(), "", d)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if strings.Contains(out.String(), "already a checkout") {
+		t.Error("adopt prompt must not be shown from a subdirectory of the checkout")
+	}
+	if !cloneCalled {
+		t.Error("Clone should be called when cwd is not the checkout root")
+	}
+	if markerDir != "/tmp/acme-web/src/acme-web" {
+		t.Errorf("WriteMarker dir = %q, want the clone dir /tmp/acme-web/src/acme-web (never the subdirectory itself)", markerDir)
+	}
+}
+
+// T22: same via explicit project arg — a subdirectory must fall through to the
+// prompt-dir + clone flow, not adopt in place.
+func TestRun_ProjectArg_CwdIsSubdirOfCheckout_Clones(t *testing.T) {
+	var clonedDir string
+	var out bytes.Buffer
+
+	d := checkout.Deps{
+		Creds:       makeCreds(),
+		List:        fakeList(twoProjects()),
+		Clone:       func(repoURL, dir string) error { clonedDir = dir; return nil },
+		Wire:        noopWire,
+		ReadMarker:  fakeReadMarker(nil),
+		WriteMarker: noopWriteMarker,
+		OriginURL: func(dir string) (string, error) {
+			return "git@github.com:hemfrid/acme-web.git", nil
+		},
+		Toplevel: func(dir string) (string, error) { return "/tmp/acme-web", nil },
+		Cwd:      "/tmp/acme-web/src",
+		In:       strings.NewReader("\n"), // accept default clone dir
+		Out:      &out,
+	}
+
+	_, err := checkout.Run(context.Background(), "acme-web", d)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if strings.Contains(out.String(), "already a checkout") {
+		t.Error("adopt prompt must not be shown from a subdirectory of the checkout")
+	}
+	if clonedDir != "/tmp/acme-web/src/acme-web" {
+		t.Errorf("Clone dir = %q, want /tmp/acme-web/src/acme-web", clonedDir)
+	}
+}
+
+// T23: a nil Toplevel dep (older callers/tests) skips the adoption check by
+// design, same as a nil OriginURL.
+func TestRun_NilToplevel_SkipsAdoption(t *testing.T) {
+	cloneCalled := false
+	var out bytes.Buffer
+
+	d := checkout.Deps{
+		Creds:       makeCreds(),
+		List:        fakeList(twoProjects()),
+		Clone:       func(repoURL, dir string) error { cloneCalled = true; return nil },
+		Wire:        noopWire,
+		ReadMarker:  fakeReadMarker(nil),
+		WriteMarker: noopWriteMarker,
+		OriginURL: func(dir string) (string, error) {
+			return "https://github.com/hemfrid/acme-web.git", nil
+		},
+		Cwd: "/tmp/acme-web",
+		In:  strings.NewReader("\n"), // accept default clone dir
+		Out: &out,
+	}
+
+	_, err := checkout.Run(context.Background(), "acme-web", d)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if strings.Contains(out.String(), "already a checkout") {
+		t.Error("adopt prompt must not be shown when Toplevel is nil")
+	}
+	if !cloneCalled {
+		t.Error("Clone should be called when the adoption check is skipped")
+	}
+}
+
+// T24: toplevel and cwd naming the same directory through different spellings
+// (trailing slash, dot segments) still counts as the checkout root.
+func TestRun_ProjectArg_ToplevelEquivalentPath_Adopts(t *testing.T) {
+	cloneCalled := false
+
+	d := checkout.Deps{
+		Creds:       makeCreds(),
+		List:        fakeList(twoProjects()),
+		Clone:       func(repoURL, dir string) error { cloneCalled = true; return nil },
+		Wire:        noopWire,
+		ReadMarker:  fakeReadMarker(nil),
+		WriteMarker: noopWriteMarker,
+		OriginURL: func(dir string) (string, error) {
+			return "https://github.com/hemfrid/acme-web.git", nil
+		},
+		Toplevel: func(dir string) (string, error) { return "/tmp/acme-web/", nil },
+		Cwd:      "/tmp/./acme-web",
+		In:       strings.NewReader("y\n"),
+		Out:      &bytes.Buffer{},
+	}
+
+	dir, err := checkout.Run(context.Background(), "acme-web", d)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cloneCalled {
+		t.Error("Clone must not be called when adopting an existing checkout")
+	}
+	if dir != "/tmp/./acme-web" {
+		t.Errorf("returned dir = %q, want the cwd", dir)
+	}
+}
+
 // T14: an empty project list resolves no project → empty dir, no error.
 func TestRun_EmptyList_ReturnsEmptyDir(t *testing.T) {
 	d := checkout.Deps{

@@ -39,8 +39,13 @@ The everyday loop is **`keyto checkout <project>` → `keyto start`**:
 - **`keyto checkout`** clones the project via the Hub git proxy, wires the git
   remote / credential helper / your commit identity, and (with shell
   integration) drops you into the directory. With no argument it lists your
-  projects; run inside an existing checkout it re-wires it. If git is missing it
-  guides you through installing it first.
+  projects; run inside an existing checkout it re-wires it. If you're standing
+  at the root of a plain git clone of the selected project (cloned outside
+  keyto — HTTPS or SSH remote), it offers to **adopt it in place** [Y/n]
+  instead of cloning a duplicate: it writes the `.keyto` marker and points
+  `origin` at the Hub proxy, never touching your working tree. Declining falls
+  back to the normal clone flow. If git is missing it guides you through
+  installing it first.
 - **`keyto start`** brings the project up on your machine with one command. It
   runs the same preflight as `keyto doctor` — **git, the Docker engine + daemon,
   the Docker Compose v2 plugin, and Node ≥20** — and offers consent-gated
@@ -190,8 +195,9 @@ go build -o keyto ./cmd/keyto
   has expired or been revoked, `keyto checkout` / `keyto start` re-auth you
   automatically — no more `keyto auth --force`.
 - `keyto checkout` → lists your projects, clones the chosen one via the Hub git
-  proxy, and configures the git remote, the `keyto credential` helper, and your
-  commit identity.
+  proxy (or adopts a matching clone already in your cwd — see Usage), and
+  configures the git remote, the `keyto credential` helper, and your commit
+  identity.
 - `keyto start` → boots the checked-out project locally: prerequisite checks
   (git/Docker/Node, consent-gated install of anything missing) → `keyto env sync`
   (writes `COMPOSE_PROJECT_NAME` + per-project host ports for an isolated Docker

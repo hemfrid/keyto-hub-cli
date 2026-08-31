@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 
@@ -38,6 +39,18 @@ type Deps struct {
 	// WriteMarker writes the .keyto/project.json marker to dir.
 	WriteMarker func(dir string, m *project.Marker) error
 
+	// OriginURL returns the URL of the "origin" remote of the git repository
+	// at dir. An error (or a nil func) means dir is not a git repository or
+	// has no origin — adoption of an existing checkout is then skipped.
+	OriginURL func(dir string) (string, error)
+
+	// Toplevel returns the root of the git working tree containing dir
+	// (`git rev-parse --show-toplevel`). Adoption is only offered when the
+	// cwd IS the toplevel — from a subdirectory the marker would land inside
+	// the tracked tree instead of the repo root. An error (or a nil func)
+	// skips adoption, same as OriginURL.
+	Toplevel func(dir string) (string, error)
+
 	// Cwd is the current working directory (injected so tests don't depend on os.Getwd).
 	Cwd string
 
@@ -66,10 +79,13 @@ type session struct {
 //  1. If Creds is nil → error asking the user to run `keyto auth`.
 //  2. If projectArg is set:
 //     - cwd is already that project → re-wire in place.
-//     - otherwise fetch List, find by name, prompt for dir, clone, write marker, wire.
+//     - otherwise fetch List, find by name, then: cwd's git origin matches the
+//     project → offer to adopt in place (marker + wire, no clone); else
+//     prompt for dir, clone, write marker, wire.
 //  3. If projectArg is empty:
 //     - cwd has a marker → prompt "Work in <name>? [Y/n]"; yes → re-wire; no → picker.
-//     - otherwise → picker (numbered list from List); empty list → message and return.
+//     - otherwise → picker (numbered list from List); empty list → message and
+//     return. A selection matching cwd's git origin offers adoption as above.
 func Run(ctx context.Context, projectArg string, d Deps) (string, error) {
 	if d.Creds == nil {
 		return "", fmt.Errorf("not authenticated — run `keyto auth`")
@@ -106,6 +122,10 @@ func (s *session) runWithArg(ctx context.Context, name string) (string, error) {
 	proj, found := findProject(projects, name)
 	if !found {
 		return "", fmt.Errorf("project %q not found or you are not a member", name)
+	}
+
+	if dir, adopted, err := s.maybeAdopt(proj); err != nil || adopted {
+		return dir, err
 	}
 
 	// Prompt for checkout directory.
@@ -175,12 +195,94 @@ func (s *session) runPicker(ctx context.Context) (string, error) {
 	}
 	proj := projects[idx-1]
 
+	if dir, adopted, err := s.maybeAdopt(proj); err != nil || adopted {
+		return dir, err
+	}
+
 	dir, err := s.promptDir(proj.Name)
 	if err != nil {
 		return "", err
 	}
 
 	return s.cloneAndWire(proj, dir)
+}
+
+// maybeAdopt handles the case where the cwd is already a plain git checkout of
+// the selected project (cloned outside keyto, so no marker yet): instead of
+// cloning a duplicate, offer to adopt it in place. Adoption never touches the
+// working tree — it only writes the .keyto marker and re-wires git config
+// (origin → Hub proxy, credential helper, identity). It reports adopted=false
+// when the cwd is not a matching checkout root or the user declines.
+func (s *session) maybeAdopt(proj hub.Project) (dir string, adopted bool, err error) {
+	if s.OriginURL == nil || s.Toplevel == nil {
+		return "", false, nil
+	}
+	origin, oerr := s.OriginURL(s.Cwd)
+	if oerr != nil || !originMatches(origin, proj.Org, proj.Repo) {
+		return "", false, nil
+	}
+	top, terr := s.Toplevel(s.Cwd)
+	if terr != nil || !samePath(top, s.Cwd) {
+		return "", false, nil
+	}
+
+	fmt.Fprintf(s.Out, "This folder is already a checkout of %s/%s. Use it? [Y/n] ", proj.Org, proj.Repo)
+	answer, rerr := s.readLine()
+	if rerr != nil && rerr != io.EOF {
+		return "", false, fmt.Errorf("read input: %w", rerr)
+	}
+	answer = strings.TrimSpace(strings.ToLower(answer))
+	if answer != "" && answer != "y" && answer != "yes" {
+		return "", false, nil
+	}
+
+	m := &project.Marker{
+		Name:   proj.Name,
+		Org:    proj.Org,
+		Repo:   proj.Repo,
+		HubURL: s.Creds.HubURL,
+	}
+	if err := s.WriteMarker(s.Cwd, m); err != nil {
+		return "", false, fmt.Errorf("write project marker: %w", err)
+	}
+	if err := s.Wire(s.Cwd, m, s.Creds.UserEmail, s.Creds.UserName); err != nil {
+		return "", false, err
+	}
+	fmt.Fprintf(s.Out, "Adopted existing checkout of %s in %s\n", proj.Name, s.Cwd)
+	return s.Cwd, true, nil
+}
+
+// samePath reports whether two paths refer to the same directory, resolving
+// symlinks when possible (e.g. macOS /tmp → /private/tmp) and comparing
+// case-insensitively on darwin, whose default filesystem is case-insensitive.
+func samePath(a, b string) bool {
+	na, nb := normalizePath(a), normalizePath(b)
+	if na == nb {
+		return true
+	}
+	if runtime.GOOS == "darwin" {
+		return strings.EqualFold(na, nb)
+	}
+	return false
+}
+
+// normalizePath cleans p and resolves symlinks; if resolution fails (path does
+// not exist), the cleaned path is used as-is.
+func normalizePath(p string) string {
+	clean := filepath.Clean(p)
+	if resolved, err := filepath.EvalSymlinks(clean); err == nil {
+		return resolved
+	}
+	return clean
+}
+
+// originMatches reports whether a git remote URL points at the given org/repo.
+// It accepts the Hub proxy form (https://hub/git/org/repo.git), a plain HTTPS
+// remote (https://host/org/repo[.git]), and the SSH form (git@host:org/repo[.git]).
+func originMatches(origin, org, repo string) bool {
+	u := strings.TrimSuffix(strings.TrimRight(strings.TrimSpace(origin), "/"), ".git")
+	tail := org + "/" + repo
+	return strings.HasSuffix(u, "/"+tail) || strings.HasSuffix(u, ":"+tail)
 }
 
 // cloneAndWire clones proj into dir, writes the marker, and wires git. It
