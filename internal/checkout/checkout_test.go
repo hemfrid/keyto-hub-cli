@@ -586,7 +586,7 @@ func TestRun_Picker_CwdNotGitRepo_Clones(t *testing.T) {
 		Toplevel: func(dir string) (string, error) { return "", errors.New("not a git repository") },
 		Cwd:      "/tmp/cwd",
 		In:       strings.NewReader("1\n\n"),
-		Out: &bytes.Buffer{},
+		Out:      &bytes.Buffer{},
 	}
 
 	_, err := checkout.Run(context.Background(), "", d)
@@ -620,7 +620,7 @@ func TestRun_ProjectArg_CwdOriginMatches_AdoptsInPlace(t *testing.T) {
 		Toplevel: func(dir string) (string, error) { return "/tmp/acme-web", nil },
 		Cwd:      "/tmp/acme-web",
 		In:       strings.NewReader("y\n"),
-		Out: &bytes.Buffer{},
+		Out:      &bytes.Buffer{},
 	}
 
 	dir, err := checkout.Run(context.Background(), "acme-web", d)
