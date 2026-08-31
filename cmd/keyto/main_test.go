@@ -243,12 +243,56 @@ func TestGitOriginURL(t *testing.T) {
 	}
 }
 
-// checkoutDeps must wire the OriginURL dep so checkout.Run can offer adopting
-// an existing plain-git checkout instead of cloning a duplicate.
+// gitToplevel must return the working-tree root both from the root itself and
+// from a subdirectory, and error on a non-repo dir.
+func TestGitToplevel(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+	ctx := context.Background()
+	dir := t.TempDir()
+
+	if _, err := gitToplevel(ctx, dir); err == nil {
+		t.Error("expected error for a non-repo directory, got nil")
+	}
+
+	cmd := exec.Command("git", "init")
+	cmd.Dir = dir
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git init: %v\n%s", err, out)
+	}
+	sub := filepath.Join(dir, "src")
+	if err := os.Mkdir(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// git reports the physical path; t.TempDir may sit behind symlinks (macOS
+	// /var → /private/var), so compare against the resolved dir.
+	want, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, from := range []string{dir, sub} {
+		got, err := gitToplevel(ctx, from)
+		if err != nil {
+			t.Fatalf("gitToplevel(%q): %v", from, err)
+		}
+		if got != want {
+			t.Errorf("gitToplevel(%q) = %q, want %q", from, got, want)
+		}
+	}
+}
+
+// checkoutDeps must wire the OriginURL and Toplevel deps so checkout.Run can
+// offer adopting an existing plain-git checkout (root only) instead of cloning
+// a duplicate.
 func TestCheckoutDeps_WiresOriginURL(t *testing.T) {
 	d := checkoutDeps(context.Background(), nil, "/tmp/cwd")
 	if d.OriginURL == nil {
 		t.Fatal("checkoutDeps must set OriginURL")
+	}
+	if d.Toplevel == nil {
+		t.Fatal("checkoutDeps must set Toplevel")
 	}
 }
 

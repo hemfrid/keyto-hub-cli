@@ -260,6 +260,7 @@ func checkoutDeps(ctx context.Context, creds *config.Creds, cwd string) checkout
 		ReadMarker:  project.Read,
 		WriteMarker: project.Write,
 		OriginURL:   func(dir string) (string, error) { return gitOriginURL(ctx, dir) },
+		Toplevel:    func(dir string) (string, error) { return gitToplevel(ctx, dir) },
 		Cwd:         cwd,
 		In:          os.Stdin,
 		Out:         os.Stderr,
@@ -275,6 +276,19 @@ func gitOriginURL(ctx context.Context, dir string) (string, error) {
 	out, err := cmd.Output()
 	if err != nil {
 		return "", fmt.Errorf("git remote get-url origin: %w", err)
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+// gitToplevel returns the root of the git working tree containing dir. An
+// error means dir is not inside a git working tree — checkout.Run then skips
+// the adopt-in-place offer and falls back to a normal clone.
+func gitToplevel(ctx context.Context, dir string) (string, error) {
+	cmd := exec.CommandContext(ctx, "git", "rev-parse", "--show-toplevel")
+	cmd.Dir = dir
+	out, err := cmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("git rev-parse --show-toplevel: %w", err)
 	}
 	return strings.TrimSpace(string(out)), nil
 }

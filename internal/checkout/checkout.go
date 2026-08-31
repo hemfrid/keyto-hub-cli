@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 
@@ -42,6 +43,13 @@ type Deps struct {
 	// at dir. An error (or a nil func) means dir is not a git repository or
 	// has no origin — adoption of an existing checkout is then skipped.
 	OriginURL func(dir string) (string, error)
+
+	// Toplevel returns the root of the git working tree containing dir
+	// (`git rev-parse --show-toplevel`). Adoption is only offered when the
+	// cwd IS the toplevel — from a subdirectory the marker would land inside
+	// the tracked tree instead of the repo root. An error (or a nil func)
+	// skips adoption, same as OriginURL.
+	Toplevel func(dir string) (string, error)
 
 	// Cwd is the current working directory (injected so tests don't depend on os.Getwd).
 	Cwd string
@@ -204,13 +212,17 @@ func (s *session) runPicker(ctx context.Context) (string, error) {
 // cloning a duplicate, offer to adopt it in place. Adoption never touches the
 // working tree — it only writes the .keyto marker and re-wires git config
 // (origin → Hub proxy, credential helper, identity). It reports adopted=false
-// when the cwd is not a matching checkout or the user declines.
+// when the cwd is not a matching checkout root or the user declines.
 func (s *session) maybeAdopt(proj hub.Project) (dir string, adopted bool, err error) {
-	if s.OriginURL == nil {
+	if s.OriginURL == nil || s.Toplevel == nil {
 		return "", false, nil
 	}
 	origin, oerr := s.OriginURL(s.Cwd)
 	if oerr != nil || !originMatches(origin, proj.Org, proj.Repo) {
+		return "", false, nil
+	}
+	top, terr := s.Toplevel(s.Cwd)
+	if terr != nil || !samePath(top, s.Cwd) {
 		return "", false, nil
 	}
 
@@ -238,6 +250,30 @@ func (s *session) maybeAdopt(proj hub.Project) (dir string, adopted bool, err er
 	}
 	fmt.Fprintf(s.Out, "Adopted existing checkout of %s in %s\n", proj.Name, s.Cwd)
 	return s.Cwd, true, nil
+}
+
+// samePath reports whether two paths refer to the same directory, resolving
+// symlinks when possible (e.g. macOS /tmp → /private/tmp) and comparing
+// case-insensitively on darwin, whose default filesystem is case-insensitive.
+func samePath(a, b string) bool {
+	na, nb := normalizePath(a), normalizePath(b)
+	if na == nb {
+		return true
+	}
+	if runtime.GOOS == "darwin" {
+		return strings.EqualFold(na, nb)
+	}
+	return false
+}
+
+// normalizePath cleans p and resolves symlinks; if resolution fails (path does
+// not exist), the cleaned path is used as-is.
+func normalizePath(p string) string {
+	clean := filepath.Clean(p)
+	if resolved, err := filepath.EvalSymlinks(clean); err == nil {
+		return resolved
+	}
+	return clean
 }
 
 // originMatches reports whether a git remote URL points at the given org/repo.
