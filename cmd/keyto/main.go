@@ -259,10 +259,24 @@ func checkoutDeps(ctx context.Context, creds *config.Creds, cwd string) checkout
 		},
 		ReadMarker:  project.Read,
 		WriteMarker: project.Write,
+		OriginURL:   func(dir string) (string, error) { return gitOriginURL(ctx, dir) },
 		Cwd:         cwd,
 		In:          os.Stdin,
 		Out:         os.Stderr,
 	}
+}
+
+// gitOriginURL returns the URL of dir's "origin" remote. An error means dir is
+// not a git repository or has no origin — checkout.Run treats that as "nothing
+// to adopt" and falls back to a normal clone.
+func gitOriginURL(ctx context.Context, dir string) (string, error) {
+	cmd := exec.CommandContext(ctx, "git", "remote", "get-url", "origin")
+	cmd.Dir = dir
+	out, err := cmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("git remote get-url origin: %w", err)
+	}
+	return strings.TrimSpace(string(out)), nil
 }
 
 // startPrereqTip detects (without installing or blocking) whether Docker and a

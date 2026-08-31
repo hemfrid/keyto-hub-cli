@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -203,6 +204,51 @@ func TestCloneArgs_NoHubURLOmitsHelper(t *testing.T) {
 
 	if len(args) != 3 || args[0] != "clone" {
 		t.Fatalf("expected plain [clone <url> <dir>], got %v", args)
+	}
+}
+
+// gitOriginURL must return the origin URL of a real repo, and error on a
+// non-repo dir or a repo without an origin remote.
+func TestGitOriginURL(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+	ctx := context.Background()
+	dir := t.TempDir()
+	git := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+
+	if _, err := gitOriginURL(ctx, dir); err == nil {
+		t.Error("expected error for a non-repo directory, got nil")
+	}
+
+	git("init")
+	if _, err := gitOriginURL(ctx, dir); err == nil {
+		t.Error("expected error for a repo without an origin remote, got nil")
+	}
+
+	git("remote", "add", "origin", "https://github.com/hemfrid/acme-web.git")
+	got, err := gitOriginURL(ctx, dir)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != "https://github.com/hemfrid/acme-web.git" {
+		t.Errorf("origin = %q, want https://github.com/hemfrid/acme-web.git", got)
+	}
+}
+
+// checkoutDeps must wire the OriginURL dep so checkout.Run can offer adopting
+// an existing plain-git checkout instead of cloning a duplicate.
+func TestCheckoutDeps_WiresOriginURL(t *testing.T) {
+	d := checkoutDeps(context.Background(), nil, "/tmp/cwd")
+	if d.OriginURL == nil {
+		t.Fatal("checkoutDeps must set OriginURL")
 	}
 }
 
