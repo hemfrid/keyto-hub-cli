@@ -151,6 +151,8 @@ func dispatch(args []string) error {
 	case "dev":
 		fmt.Fprintln(os.Stderr, "note: 'keyto dev' is deprecated — use 'keyto start'. Compose passthrough args are ignored.")
 		return runBoot(context.Background(), nil)
+	case "status", "pods", "logs", "events", "db":
+		return runDebug(context.Background(), debugKindByCommand[args[0]], args[1:])
 	default:
 		return fmt.Errorf("unknown command: %s", args[0])
 	}
@@ -892,6 +894,14 @@ func printUsage() {
 	fmt.Println("  env set     Set/update env vars in UAT or PROD via the Hub")
 	fmt.Println("              Usage: keyto env set KEY=VALUE [KEY2=VALUE2 ...]  |  keyto env set KEY (prompts)")
 	fmt.Println("              Flags: --env uat|prod  --allow-prod  --app <name> (target another project)")
+	fmt.Println("  status [project]   Deployed app health: ArgoCD, pods, warnings, secret sync, databases")
+	fmt.Println("  pods [project]     Pods with restarts and last termination reason (e.g. OOMKilled)")
+	fmt.Println("  logs [project]     Container logs; defaults to the most recently restarted pod")
+	fmt.Println("              Flags: --pod  --container  --previous  --tail N  --since 1h")
+	fmt.Println("  events [project]   Recent Kubernetes events (--since, max 60m)")
+	fmt.Println("  db [project]       Postgres cluster status")
+	fmt.Println("              Common flags: --env uat|prod (default uat)  --json")
+	fmt.Println("              Project defaults to the current checkout. Owners/collaborators only.")
 	fmt.Println("  ai [init|update|status]   Install / update the AI capabilities bundle in this repo")
 	fmt.Println("  dev         Deprecated alias for `keyto start`")
 	fmt.Println("  help        Show this help message")

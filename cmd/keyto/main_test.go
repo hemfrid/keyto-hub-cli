@@ -796,3 +796,22 @@ func TestReauth_MintsAndSaves(t *testing.T) {
 		t.Errorf("saved credential = %q, want tok_fresh", saved.Credential)
 	}
 }
+
+func TestDispatch_DebugCommandsRouteToRunDebug(t *testing.T) {
+	orig := runDebug
+	defer func() { runDebug = orig }()
+	var gotKind string
+	var gotArgs []string
+	runDebug = func(_ context.Context, kind string, args []string) error {
+		gotKind, gotArgs = kind, args
+		return nil
+	}
+	for cmd, kind := range map[string]string{"status": "overview", "pods": "pods", "logs": "logs", "events": "events", "db": "database"} {
+		if err := dispatch([]string{cmd, "demo-app", "--env", "prod"}); err != nil {
+			t.Fatal(err)
+		}
+		if gotKind != kind || len(gotArgs) != 3 || gotArgs[0] != "demo-app" {
+			t.Fatalf("%s → kind %q args %v", cmd, gotKind, gotArgs)
+		}
+	}
+}
