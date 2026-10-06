@@ -287,3 +287,91 @@ func TestRenderDebug_JSONNeverColoured(t *testing.T) {
 		t.Fatal("json output coloured")
 	}
 }
+
+func TestSanitizeForTerminal(t *testing.T) {
+	cases := []struct {
+		name, in string
+		colour   bool
+		want     string
+	}{
+		{"osc52 bel", "a\x1b]52;c;aGVsbG8=\x07b", true, "ab"},
+		{"osc52 st", "a\x1b]52;c;aGVsbG8=\x1b\\b", false, "ab"},
+		{"osc unterminated", "a\x1b]0;title", true, "a"},
+		{"osc8 keeps text", "\x1b]8;;http://evil\x07click\x1b]8;;\x07", true, "click"},
+		{"csi cursor up + erase", "x\x1b[2A\x1b[2Ky", true, "xy"},
+		{"csi with intermediate", "x\x1b[1 qy", true, "xy"},
+		{"sgr kept", "\x1b[1;31mred\x1b[0m", true, "\x1b[1;31mred\x1b[0m"},
+		{"sgr dropped", "\x1b[1;31mred\x1b[0m", false, "red"},
+		{"c1 csi bytes", "a\x9b2Ab", true, "ab"},
+		{"c1 csi rune", "a\u009b2Ab", true, "ab"},
+		{"c1 osc bytes", "a\x9d52;c;x\x07b", true, "ab"},
+		{"c1 dcs", "a\x90qpayload\x1b\\b", true, "ab"},
+		{"apc", "a\x1b_payload\x1b\\b", true, "ab"},
+		{"lone esc", "a\x1bb", true, "a"},
+		{"esc at end", "ab\x1b", true, "ab"},
+		{"charset select", "a\x1b(Bb", true, "ab"},
+		{"tab kept", "a\tb", false, "a\tb"},
+		{"cr bell backspace dropped", "a\rb\x07c\x08d\x7fe", false, "abcde"},
+		{"unicode kept", "héllo ✓", true, "héllo ✓"},
+		{"csi interrupted by control", "a\x1b[1\x07b", true, "ab"},
+	}
+	for _, tc := range cases {
+		if got := sanitizeForTerminal(tc.in, tc.colour); got != tc.want {
+			t.Errorf("%s: got %q want %q", tc.name, got, tc.want)
+		}
+	}
+}
+
+func TestRenderLogs_SanitisesByMode(t *testing.T) {
+	raw := `{"pod":"p","container":"c","lines":["\u001b]52;c;eA==\u0007ok \u001b[31mred\u001b[0m\u001b[2J"]}`
+	if out := render(t, "logs", raw, palette{on: true}); !strings.Contains(out, "ok \x1b[31mred\x1b[0m\n") || strings.Contains(out, "52;c") || strings.Contains(out, "[2J") {
+		t.Fatalf("colour mode: %q", out)
+	}
+	if out := render(t, "logs", raw, palette{}); !strings.Contains(out, "ok red\n") || strings.Contains(out, "\x1b") {
+		t.Fatalf("plain mode: %q", out)
+	}
+	if out := render(t, "logs", raw, palette{raw: true}); !strings.Contains(out, "\x1b]52;c;eA==\x07ok") {
+		t.Fatalf("--raw must pass bytes through: %q", out)
+	}
+}
+
+func TestRenderLogs_JSONNotSanitised(t *testing.T) {
+	raw := `{"pod":"p","container":"c","lines":["\u001b]52;c;eA==\u0007x"]}`
+	var buf bytes.Buffer
+	_ = renderDebugColour(&buf, "logs", json.RawMessage(raw), true, palette{})
+	if !strings.Contains(buf.String(), `\u001b]52`) || strings.Contains(buf.String(), "\x1b") {
+		t.Fatalf("json should stay encoded: %q", buf.String())
+	}
+}
+
+func TestRender_MaliciousServerStringsNeutralised(t *testing.T) {
+	evil := `\u001b]52;c;eA==\u0007\u001b[2J`
+	for _, c := range []palette{{}, {on: true}} {
+		pods := render(t, "pods", `[{"name":"web`+evil+`","phase":"Running`+evil+`","ready":true,"restarts":0,"containers":[]}]`, c)
+		ev := render(t, "events", `[{"type":"Warning","reason":"R`+evil+`","object":"o`+evil+`","message":"m`+evil+`","lastSeen":null}]`, c)
+		ov := render(t, "overview", overviewBase+`,"argo":{"sync":"Synced","health":"Healthy","conditions":[{"type":"T","message":"msg`+evil+`"}],"unhealthyResources":[{"kind":"K","name":"n`+evil+`","health":"Degraded","message":"m`+evil+`"}]},"externalSecrets":[{"name":"es`+evil+`","ready":false,"message":"bad`+evil+`","reason":null}],"databases":[{"name":"pg`+evil+`","phase":"ph`+evil+`","instances":1,"readyInstances":1,"primary":"p`+evil+`","lastFailover":null}]}`, c)
+		for name, out := range map[string]string{"pods": pods, "events": ev, "overview": ov} {
+			stripped := regexp.MustCompile(`\x1b\[[0-9;]*m`).ReplaceAllString(out, "")
+			if strings.Contains(stripped, "\x1b") || strings.Contains(stripped, "\x07") {
+				t.Errorf("%s (colour=%v) leaked escape: %q", name, c.on, out)
+			}
+		}
+	}
+}
+
+func TestExplainDebugError_SanitisesHubMessage(t *testing.T) {
+	err := explainDebugError(&hub.DebugError{Status: 500, Message: "boom\x1b]0;pwn\x07!"}, "p", "uat")
+	if strings.Contains(err.Error(), "\x1b") || err.Error() != "boom!" {
+		t.Fatalf("got %q", err.Error())
+	}
+}
+
+func TestParseDebugArgs_RawFlagLogsOnly(t *testing.T) {
+	a, err := parseDebugArgs("logs", []string{"demo-app", "--raw"}, noMarker)
+	if err != nil || !a.Raw {
+		t.Fatalf("got %+v err %v", a, err)
+	}
+	if _, err := parseDebugArgs("pods", []string{"demo-app", "--raw"}, noMarker); err == nil {
+		t.Fatal("--raw must be rejected outside logs")
+	}
+}

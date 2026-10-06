@@ -897,7 +897,7 @@ func printUsage() {
 	fmt.Println("  status [project]   Deployed app health: ArgoCD, pods, warnings, secret sync, databases")
 	fmt.Println("  pods [project]     Pods with restarts and last termination reason (e.g. OOMKilled)")
 	fmt.Println("  logs [project]     Container logs; defaults to the most recently restarted pod")
-	fmt.Println("              Flags: --pod  --container  --previous  --tail N  --since 1h")
+	fmt.Println("              Flags: --pod  --container  --previous  --tail N  --since 1h  --raw (unfiltered; trusts the app's output)")
 	fmt.Println("  events [project]   Recent Kubernetes events (--since, max 60m)")
 	fmt.Println("  db [project]       Postgres cluster status")
 	fmt.Println("              Common flags: --env uat|prod (default uat)  --json")
