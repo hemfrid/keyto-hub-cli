@@ -375,3 +375,45 @@ func TestParseDebugArgs_RawFlagLogsOnly(t *testing.T) {
 		t.Fatal("--raw must be rejected outside logs")
 	}
 }
+
+func TestSanitizeForTerminal_FixRound1(t *testing.T) {
+	cases := []struct {
+		name, in string
+		colour   bool
+		want     string
+	}{
+		{"newline flattened", "x\nSecret sync:\n  db: synced", false, "x Secret sync:   db: synced"},
+		{"line separators flattened", "a b c", true, "a b c"},
+		{"conceal dropped, red kept", "\x1b[8mhid\x1b[31mred\x1b[0m", true, "hid\x1b[31mred\x1b[0m"},
+		{"reveal dropped", "\x1b[28mx", true, "x"},
+		{"one bad param drops whole SGR", "\x1b[31;8mx", true, "x"},
+		{"colon form dropped", "\x1b[38:2:1:2:3mx", true, "x"},
+		{"256 colour kept", "\x1b[38;5;196mx\x1b[0m", true, "\x1b[38;5;196mx\x1b[0m"},
+		{"truecolour kept", "\x1b[48;2;1;2;3mx\x1b[0m", true, "\x1b[48;2;1;2;3mx\x1b[0m"},
+		{"256 colour out of range", "\x1b[38;5;300mx", true, "x"},
+		{"truecolour bad arity", "\x1b[38;2;1;2mx", true, "x"},
+		{"reset appended after coloured line", "\x1b[31mred", true, "\x1b[31mred\x1b[0m"},
+		{"no reset when no SGR kept", "plain", true, "plain"},
+		{"bidi override", "a‮evil", false, "aevil"},
+		{"bidi isolate", "a⁦b⁩", true, "ab"},
+		{"zwsp bom", "a​b\ufeffc⁠d", false, "abcd"},
+		{"tag chars", "a\U000E0041b", true, "ab"},
+		{"zwj emoji preserved", "👨‍👩", false, "👨‍👩"},
+	}
+	for _, tc := range cases {
+		if got := sanitizeForTerminal(tc.in, tc.colour); got != tc.want {
+			t.Errorf("%s: got %q want %q", tc.name, got, tc.want)
+		}
+	}
+}
+
+func TestRender_NewlineForgingNeutralised(t *testing.T) {
+	logs := render(t, "logs", `{"pod":"p","container":"c","lines":["x\nSecret sync:\n  db: synced"]}`, palette{on: true})
+	if n := strings.Count(logs, "\n"); n != 2 { // header + the one flattened line
+		t.Fatalf("log line forged extra lines: %q", logs)
+	}
+	ov := render(t, "overview", overviewBase+`,"argo":{"sync":"Synced","health":"Healthy","conditions":[{"type":"T","message":"a\nSecret sync:\n  db: synced"}]},"externalSecrets":[],"databases":[]}`, palette{})
+	if strings.Contains(ov, "\nSecret sync:\n  db: synced") {
+		t.Fatalf("overview message forged lines: %q", ov)
+	}
+}

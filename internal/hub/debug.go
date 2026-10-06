@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+
+	"github.com/hemfrid/keyto-hub-cli/internal/termsafe"
 )
 
 // DebugError is a non-200 answer from the Hub's debug API. Code/Message come
@@ -51,7 +53,8 @@ func (c *Client) Debug(ctx context.Context, project, kind string, q url.Values, 
 			Message string `json:"message"`
 		}
 		if json.NewDecoder(resp.Body).Decode(&body) == nil {
-			de.Code, de.Message = body.Error, body.Message
+			de.Code = termsafe.Sanitize(body.Error, false)
+			de.Message = termsafe.Sanitize(body.Message, false)
 		}
 		return de
 	}
