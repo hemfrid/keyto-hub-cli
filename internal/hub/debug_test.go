@@ -77,3 +77,17 @@ func TestDebug_NonJSONErrorDoesNotLeakBody(t *testing.T) {
 		t.Fatalf("error leaked body: %v", err)
 	}
 }
+
+func TestDebug_ErrorMessageSanitisedAtDecode(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":"e\u001b]0;x\u0007","message":"bo\u001b]52;c;eA==\u0007om\nline"}`))
+	}))
+	defer srv.Close()
+	c := &hub.Client{BaseURL: srv.URL}
+	err := c.Debug(context.Background(), "demo", "pods", nil, &[]hub.DebugPod{})
+	var de *hub.DebugError
+	if !errors.As(err, &de) || de.Message != "boom line" || de.Code != "e" || strings.Contains(err.Error(), "\x1b") {
+		t.Fatalf("got %+v / %q", de, err)
+	}
+}

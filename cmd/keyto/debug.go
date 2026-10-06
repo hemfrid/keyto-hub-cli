@@ -31,7 +31,7 @@ var debugKindByCommand = map[string]string{
 
 type debugArgs struct {
 	Project, Env, Pod, Container string
-	Previous, JSON               bool
+	Previous, JSON, Raw          bool
 	Tail, SinceSeconds           int
 	SinceMinutes                 int
 }
@@ -71,6 +71,7 @@ func parseDebugArgsTo(out io.Writer, kind string, args []string, markerProject f
 	if kind == "logs" {
 		fs.StringVar(&a.Pod, "pod", "", "pod name (default: most recently restarted)")
 		fs.StringVar(&a.Container, "container", "", "container name")
+		fs.BoolVar(&a.Raw, "raw", false, "print log lines byte-for-byte (trusts the app's output: it can carry terminal escape sequences)")
 		fs.BoolVar(&a.Previous, "previous", false, "read the previous (crashed) container")
 		fs.IntVar(&a.Tail, "tail", 0, "lines (default 200, max 2000)")
 		fs.StringVar(&since, "since", "", "only newer than this duration, e.g. 30m, 1h")
@@ -170,7 +171,7 @@ func explainDebugError(err error, projectName, env string) error {
 		// A specific Hub message ("No such pod in this environment.") is worth
 		// printing; the generic one, or none, means feature-off / unknown project.
 		if de.Message != "" && de.Message != "Not found." {
-			return errors.New(de.Message)
+			return errors.New(sanitizeForTerminal(de.Message, false))
 		}
 		return fmt.Errorf("not available on this Hub, or the project %q doesn't exist", projectName)
 	case 409:
@@ -179,7 +180,7 @@ func explainDebugError(err error, projectName, env string) error {
 		return errors.New("too many debug requests; wait a minute and retry")
 	}
 	if de.Message != "" {
-		return errors.New(de.Message)
+		return errors.New(sanitizeForTerminal(de.Message, false))
 	}
 	return fmt.Errorf("the Hub could not answer (HTTP %d); try again shortly", de.Status)
 }
@@ -192,8 +193,12 @@ func str(p *string, def string) string {
 }
 
 // palette colours the CLI's own output. Disabled (plain) when piped, with
-// --json, or under NO_COLOR. Log lines never go through it.
-type palette struct{ on bool }
+// --json, or under NO_COLOR. raw (`keyto logs --raw`) prints log lines
+// unsanitised. Server-provided text goes through s() before it is printed.
+type palette struct{ on, raw bool }
+
+// s neutralises terminal escape sequences in a server-provided string.
+func (c palette) s(x string) string { return sanitizeForTerminal(x, false) }
 
 func (c palette) wrap(code, s string) string {
 	if !c.on || s == "" {
@@ -241,7 +246,7 @@ func (c palette) dimDash(s string) string {
 // cleanCell keeps one record on one table line.
 var cellCleaner = strings.NewReplacer("\r\n", " ", "\n", " ", "\r", " ", "\t", " ")
 
-func cleanCell(s string) string { return cellCleaner.Replace(s) }
+func cleanCell(s string) string { return sanitizeForTerminal(cellCleaner.Replace(s), false) }
 
 type cell struct {
 	text  string
@@ -356,24 +361,24 @@ func renderDbs(w io.Writer, c palette, dbs []hub.DebugDbCluster) {
 			total = strconv.Itoa(*d.Instances)
 		}
 		fmt.Fprintf(w, "%s: %s (%s/%s ready, primary %s, last failover %s)\n",
-			d.Name, str(d.Phase, "unknown"), ready, total, str(d.Primary, "?"), c.dimDash(str(d.LastFailover, "-")))
+			c.s(d.Name), c.s(str(d.Phase, "unknown")), ready, total, c.s(str(d.Primary, "?")), c.dimDash(c.s(str(d.LastFailover, "-"))))
 	}
 }
 
 func renderOverview(w io.Writer, c palette, o hub.DebugOverview) {
 	if o.Argo != nil {
-		fmt.Fprintf(w, "Deployment (%s): %s / %s\n", o.Env, c.stateTone(o.Argo.Sync), c.stateTone(o.Argo.Health))
+		fmt.Fprintf(w, "Deployment (%s): %s / %s\n", c.s(o.Env), c.stateTone(c.s(o.Argo.Sync)), c.stateTone(c.s(o.Argo.Health)))
 		if o.Argo.LastOperation != nil && o.Argo.LastOperation.Message != nil {
-			fmt.Fprintf(w, "  last sync: %s: %s\n", o.Argo.LastOperation.Phase, *o.Argo.LastOperation.Message)
+			fmt.Fprintf(w, "  last sync: %s: %s\n", c.s(o.Argo.LastOperation.Phase), c.s(*o.Argo.LastOperation.Message))
 		}
 		for _, cd := range o.Argo.Conditions {
-			fmt.Fprintf(w, "  %s: %s\n", cd.Type, cd.Message)
+			fmt.Fprintf(w, "  %s: %s\n", c.s(cd.Type), c.s(cd.Message))
 		}
 		for _, r := range o.Argo.UnhealthyResources {
-			fmt.Fprintf(w, "  %s/%s: %s %s\n", r.Kind, r.Name, c.stateTone(r.Health), str(r.Message, ""))
+			fmt.Fprintf(w, "  %s/%s: %s %s\n", c.s(r.Kind), c.s(r.Name), c.stateTone(c.s(r.Health)), c.s(str(r.Message, "")))
 		}
 	} else {
-		fmt.Fprintf(w, "Deployment (%s): ArgoCD status unavailable\n", o.Env)
+		fmt.Fprintf(w, "Deployment (%s): ArgoCD status unavailable\n", c.s(o.Env))
 	}
 	fmt.Fprintln(w, "\nPods:")
 	renderPods(w, c, o.Pods)
@@ -389,9 +394,9 @@ func renderOverview(w io.Writer, c palette, o hub.DebugOverview) {
 		for _, s := range *o.ExternalSecrets {
 			state := c.green("synced")
 			if !s.Ready {
-				state = c.red("NOT synced: " + str(s.Message, str(s.Reason, "unknown")))
+				state = c.red("NOT synced: " + c.s(str(s.Message, str(s.Reason, "unknown"))))
 			}
-			fmt.Fprintf(w, "  %s: %s\n", s.Name, state)
+			fmt.Fprintf(w, "  %s: %s\n", c.s(s.Name), state)
 		}
 	}
 	if o.Databases == nil {
@@ -444,12 +449,17 @@ func renderDebugColour(w io.Writer, kind string, raw json.RawMessage, asJSON boo
 		if l.Previous {
 			which = "previous container"
 		}
-		fmt.Fprintf(w, "==> %s/%s (%s)\n", l.Pod, l.Container, which)
+		fmt.Fprintf(w, "==> %s/%s (%s)\n", c.s(l.Pod), c.s(l.Container), which)
 		if l.Truncated {
 			fmt.Fprintln(w, c.dim("… earlier lines omitted (use --tail up to 2000) …"))
 		}
-		for _, line := range l.Lines { // raw: app output (and its own ANSI) untouched
-			fmt.Fprintln(w, line)
+		for _, line := range l.Lines {
+			switch {
+			case c.raw: // opt-out: byte-for-byte
+				fmt.Fprintln(w, line)
+			default: // app output is untrusted: keep only SGR colour, and only on a colour TTY
+				fmt.Fprintln(w, sanitizeForTerminal(line, c.on))
+			}
 		}
 	case "overview":
 		var o hub.DebugOverview
@@ -483,5 +493,7 @@ var runDebug = func(ctx context.Context, kind string, args []string) error {
 	if err := c.Debug(ctx, a.Project, kind, debugQuery(kind, a), &raw); err != nil {
 		return explainDebugError(err, a.Project, a.Env)
 	}
-	return renderDebugColour(os.Stdout, kind, raw, a.JSON, stdoutPalette(a.JSON))
+	pal := stdoutPalette(a.JSON)
+	pal.raw = a.Raw && !a.JSON
+	return renderDebugColour(os.Stdout, kind, raw, a.JSON, pal)
 }
