@@ -251,7 +251,8 @@ func checkoutDeps(ctx context.Context, creds *config.Creds, cwd string) checkout
 			if creds != nil {
 				hubForClone = creds.HubURL
 			}
-			cmd := exec.CommandContext(ctx, "git", cloneArgs(hubForClone, repoURL, dir)...)
+			exe, _ := os.Executable() // "" on error → helper falls back to PATH
+			cmd := exec.CommandContext(ctx, "git", cloneArgs(hubForClone, exe, repoURL, dir)...)
 			cmd.Stdout = os.Stdout
 			cmd.Stderr = os.Stderr
 			return cmd.Run()
@@ -772,14 +773,41 @@ func runShellInit(args []string) error {
 // the clone, since the repository does not exist yet. Without an inline helper,
 // git falls back to its interactive "Username:" prompt. The helper config is
 // scoped to the Hub host (matching Wire), and the helper additionally self-guards
-// by host, so it never answers for unrelated remotes. The "-c" flag and its value
-// must precede the "clone" subcommand.
-func cloneArgs(hubURL, repoURL, dir string) []string {
+// by host, so it never answers for unrelated remotes. The "-c" flags and their
+// values must precede the "clone" subcommand.
+//
+// Like Wire, the Hub host's helper list is reset with an empty value first. git
+// consults every configured helper in config order (system → global → -c), so
+// without the reset an inherited helper runs BEFORE keyto's — on Windows that is
+// Git for Windows' system-level Git Credential Manager, which pops an
+// interactive login dialog for the Hub instead of letting keyto answer.
+//
+// exe is the running keyto binary's path (see helperCommand); the clone often
+// runs right after install, before the shell has picked up the PATH change.
+func cloneArgs(hubURL, exe, repoURL, dir string) []string {
 	args := []string{}
 	if hubURL != "" {
-		args = append(args, "-c", fmt.Sprintf("credential.%s.helper=!keyto credential", hubURL))
+		key := fmt.Sprintf("credential.%s.helper", hubURL)
+		args = append(args,
+			"-c", key+"=",
+			"-c", key+"="+helperCommand(exe),
+		)
 	}
 	return append(args, "clone", repoURL, dir)
+}
+
+// helperCommand returns the git `!` credential helper that runs `keyto
+// credential` via the binary at exe. git runs `!` helpers through sh (Git
+// Bash's on Windows), so the path is single-quoted (Windows home dirs often
+// contain spaces), with embedded single quotes escaped and backslashes turned
+// into forward slashes. An empty exe falls back to resolving "keyto" on PATH.
+func helperCommand(exe string) string {
+	if exe == "" {
+		return "!keyto credential"
+	}
+	p := strings.ReplaceAll(exe, `\`, "/")
+	p = strings.ReplaceAll(p, "'", `'\''`)
+	return "!'" + p + "' credential"
 }
 
 // runCredential implements the git credential helper sub-command.
