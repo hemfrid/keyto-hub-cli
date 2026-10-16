@@ -177,33 +177,99 @@ func TestDispatch_UpdateRoutesToRunUpdate(t *testing.T) {
 
 // cloneArgs must inject the keyto credential helper BEFORE the clone subcommand
 // so the clone authenticates to the Hub proxy instead of prompting for a username.
+// The helper list for the Hub host is reset first (empty value) so an inherited
+// interactive helper — Git Credential Manager on Windows — is never consulted.
 func TestCloneArgs_InjectsCredentialHelperBeforeClone(t *testing.T) {
-	args := cloneArgs("https://hub.keytolabs.com", "https://hub.keytolabs.com/git/o/r.git", "/tmp/r")
+	args := cloneArgs("https://hub.keytolabs.com", "/opt/keyto/keyto", "https://hub.keytolabs.com/git/o/r.git", "/tmp/r")
 
-	if len(args) != 5 {
-		t.Fatalf("expected 5 args, got %d: %v", len(args), args)
+	want := []string{
+		"-c", "credential.https://hub.keytolabs.com.helper=",
+		"-c", "credential.https://hub.keytolabs.com.helper=!'/opt/keyto/keyto' credential",
+		"clone", "https://hub.keytolabs.com/git/o/r.git", "/tmp/r",
 	}
-	if args[0] != "-c" {
-		t.Fatalf("expected first arg %q, got %q (full: %v)", "-c", args[0], args)
-	}
-	if args[1] != "credential.https://hub.keytolabs.com.helper=!keyto credential" {
-		t.Fatalf("unexpected helper config: %q", args[1])
-	}
-	if args[2] != "clone" {
-		t.Fatalf("expected %q to precede repo/dir, got %q (full: %v)", "clone", args[2], args)
-	}
-	if args[3] != "https://hub.keytolabs.com/git/o/r.git" || args[4] != "/tmp/r" {
-		t.Fatalf("unexpected repo/dir args: %v", args[3:])
+	if strings.Join(args, "\x00") != strings.Join(want, "\x00") {
+		t.Fatalf("cloneArgs mismatch\n got: %q\nwant: %q", args, want)
 	}
 }
 
 // With no Hub URL (e.g. unauthenticated), cloneArgs must not inject a helper and
 // must fall back to a plain clone.
 func TestCloneArgs_NoHubURLOmitsHelper(t *testing.T) {
-	args := cloneArgs("", "https://x/git/o/r.git", "/tmp/r")
+	args := cloneArgs("", "/opt/keyto/keyto", "https://x/git/o/r.git", "/tmp/r")
 
 	if len(args) != 3 || args[0] != "clone" {
 		t.Fatalf("expected plain [clone <url> <dir>], got %v", args)
+	}
+}
+
+// helperCommand must produce a git `!` helper that sh can run: the binary path
+// single-quoted (spaces, e.g. "C:\Users\Bente Larsen\..."), backslashes turned
+// into forward slashes, embedded single quotes escaped, and a bare "keyto"
+// fallback when the executable path is unknown.
+func TestHelperCommand(t *testing.T) {
+	cases := map[string]string{
+		"":                     "!keyto credential",
+		"/usr/local/bin/keyto": "!'/usr/local/bin/keyto' credential",
+		`C:\Users\Bente Larsen\AppData\Local\Programs\keyto\keyto.exe`: "!'C:/Users/Bente Larsen/AppData/Local/Programs/keyto/keyto.exe' credential",
+		"/home/o'neil/keyto": `!'/home/o'\''neil/keyto' credential`,
+	}
+	for exe, want := range cases {
+		if got := helperCommand(exe); got != want {
+			t.Errorf("helperCommand(%q) = %q, want %q", exe, got, want)
+		}
+	}
+}
+
+// End-to-end against real git: with an inherited helper configured globally
+// (standing in for Git Credential Manager), the clone's inline config must make
+// git consult ONLY the keyto helper for the Hub host — and leave other hosts on
+// the inherited helper. Uses a binary path containing a space.
+func TestCloneArgs_GitConsultsOnlyKeytoHelperForHub(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skip("sh not available")
+	}
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "calls.log")
+	writeHelper := func(name, tag string) string {
+		t.Helper()
+		p := filepath.Join(dir, name)
+		script := fmt.Sprintf("#!/bin/sh\necho %s >> '%s'\ncat >/dev/null\n", tag, filepath.ToSlash(logPath))
+		if err := os.WriteFile(p, []byte(script), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	inherited := writeHelper("inherited.sh", "INHERITED")
+	if err := os.MkdirAll(filepath.Join(dir, "bin dir"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	keyto := writeHelper(filepath.Join("bin dir", "keyto"), "KEYTO")
+	global := filepath.Join(dir, "global.cfg")
+	if err := os.WriteFile(global, []byte("[credential]\n\thelper = !'"+filepath.ToSlash(inherited)+"'\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	fill := func(host string) string {
+		t.Helper()
+		_ = os.Remove(logPath)
+		args := cloneArgs("https://hub.keytolabs.com", keyto, "unused", "unused")
+		args = append(args[:len(args)-3], "credential", "fill")
+		cmd := exec.Command("git", args...)
+		cmd.Env = append(os.Environ(), "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL="+global, "GIT_TERMINAL_PROMPT=0")
+		cmd.Stdin = strings.NewReader("protocol=https\nhost=" + host + "\n\n")
+		_ = cmd.Run() // no helper answers, so fill fails — we only inspect who was asked
+		b, _ := os.ReadFile(logPath)
+		return strings.TrimSpace(string(b))
+	}
+
+	if got := fill("hub.keytolabs.com"); got != "KEYTO" {
+		t.Errorf("Hub host: helpers consulted = %q, want only KEYTO", got)
+	}
+	if got := fill("github.com"); got != "INHERITED" {
+		t.Errorf("other host: helpers consulted = %q, want only INHERITED", got)
 	}
 }
 
