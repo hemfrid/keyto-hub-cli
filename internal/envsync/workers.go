@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -30,6 +31,7 @@ const (
 	localOverridesMarker = "# local overrides below"
 	platformKeyPrefix    = "KEYTO_"
 	devUserLine          = "KEYTO_DEV_USER=1"
+	backupSuffix         = ".keyto-backup"
 )
 
 // envKeyRe is a dotenv-safe key: anything else could break the line format.
@@ -94,19 +96,12 @@ func readEnvironmentsKeys(cwd string) (keys, dropped []string, err error) {
 	return keys, dropped, nil
 }
 
-// readLocalOverrides returns the local overrides section of an existing
+// localOverrides returns the local overrides section of an existing
 // .dev.vars — from the marker line to the end of the file — with every
-// KEYTO_* assignment replaced by a comment. "" when there is no file or no
+// KEYTO_* assignment replaced by a comment. found=false when there is no
 // marker. disabled names the KEYTO_* keys it neutralised.
-func readLocalOverrides(path string) (section string, disabled []string, err error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return "", nil, nil
-		}
-		return "", nil, fmt.Errorf("env sync: read %s: %w", path, err)
-	}
-	lines := strings.Split(string(data), "\n")
+func localOverrides(existing string) (section string, found bool, disabled []string) {
+	lines := strings.Split(existing, "\n")
 	start := -1
 	for i, line := range lines {
 		if strings.EqualFold(strings.TrimSpace(line), localOverridesMarker) {
@@ -115,7 +110,7 @@ func readLocalOverrides(path string) (section string, disabled []string, err err
 		}
 	}
 	if start < 0 {
-		return "", nil, nil
+		return "", false, nil
 	}
 	kept := lines[start:]
 	for i, line := range kept {
@@ -128,7 +123,31 @@ func readLocalOverrides(path string) (section string, disabled []string, err err
 	if !strings.HasSuffix(section, "\n") {
 		section += "\n"
 	}
-	return section, disabled, nil
+	return section, true, disabled
+}
+
+// backupForeignDevVars keeps a one-time copy of a .dev.vars env sync didn't
+// write (no managed header, no overrides section) before it is replaced, so
+// hand edits aren't lost. An existing backup is never overwritten: a later
+// sync would only copy env sync's own output over the user's original.
+func backupForeignDevVars(dest, existing, next string, out io.Writer) error {
+	if existing == next || strings.HasPrefix(existing, devVarsHeader) {
+		return nil
+	}
+	backup := dest + backupSuffix
+	exists, err := checkRegularOrAbsent(backup)
+	if err != nil {
+		return err
+	}
+	if exists {
+		fmt.Fprintf(out, "note: %s was not written by env sync; replacing it (an earlier backup is kept at %s)\n", dest, backup)
+		return nil
+	}
+	if err := writeEnvFile(backup, existing); err != nil {
+		return err
+	}
+	fmt.Fprintf(out, "note: %s was not written by env sync; your copy is saved at %s\n", dest, backup)
+	return nil
 }
 
 // assignedKey returns the key a dotenv line assigns ("export KEY=v" included).
@@ -194,10 +213,15 @@ func runWorkers(ctx context.Context, d Deps, marker *project.Marker, targetEnv, 
 	if dest == "" {
 		dest = filepath.Join(d.Cwd, DevVarsFile)
 	}
-	overrides, disabled, err := readLocalOverrides(dest)
+	// Read the current file without following a symlink: a cloned repo can
+	// ship .dev.vars as a link to any file, and its content would be copied
+	// into the overrides section.
+	data, exists, err := readRegularFile(dest)
 	if err != nil {
 		return err
 	}
+	existing := string(data)
+	overrides, hasOverrides, disabled := localOverrides(existing)
 	for _, k := range disabled {
 		fmt.Fprintf(d.Out, "note: removed %s from the %s local overrides — any KEYTO_* key there turns the local dev user off\n", k, DevVarsFile)
 	}
@@ -210,6 +234,11 @@ func runWorkers(ctx context.Context, d Deps, marker *project.Marker, targetEnv, 
 	if printMode {
 		_, err := fmt.Fprint(d.Out, content)
 		return err
+	}
+	if exists && !hasOverrides {
+		if err := backupForeignDevVars(dest, existing, content, d.Out); err != nil {
+			return err
+		}
 	}
 	if err := writeEnvFile(dest, content); err != nil {
 		return err

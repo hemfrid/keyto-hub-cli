@@ -404,20 +404,6 @@ func renderEnv(
 	return sb.String()
 }
 
-// writeEnvFile writes content to path with permissions 0600 + explicit Chmod.
-func writeEnvFile(path, content string) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return fmt.Errorf("create parent directory for %s: %w", path, err)
-	}
-	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
-		return fmt.Errorf("write %s: %w", path, err)
-	}
-	if err := os.Chmod(path, 0o600); err != nil {
-		return fmt.Errorf("chmod %s: %w", path, err)
-	}
-	return nil
-}
-
 // Run implements `keyto env sync [flags]`.
 //
 // Flags:
