@@ -11,6 +11,7 @@ import (
 
 	"github.com/hemfrid/keyto-hub-cli/internal/config"
 	"github.com/hemfrid/keyto-hub-cli/internal/prereq"
+	"github.com/hemfrid/keyto-hub-cli/internal/stack"
 )
 
 // stubPostDiagnostics swaps the upload seam for a recorder so the report path is
@@ -55,10 +56,11 @@ func authedHome(t *testing.T) {
 func stubDiagnose(t *testing.T, checks []prereq.CheckResult) {
 	t.Helper()
 	t.Setenv("KEYTO_HOME", t.TempDir())
-	od, ov := diagnose, osVersion
-	diagnose = func(ctx context.Context, deps prereq.Deps) []prereq.CheckResult { return checks }
+	od, ov, os_ := diagnose, osVersion, doctorStack
+	diagnose = func(ctx context.Context, deps prereq.Deps, tools []prereq.Tool) []prereq.CheckResult { return checks }
 	osVersion = func(ctx context.Context) string { return "test-os-version" }
-	t.Cleanup(func() { diagnose, osVersion = od, ov })
+	doctorStack = func() stack.Kind { return stack.NextJS }
+	t.Cleanup(func() { diagnose, osVersion, doctorStack = od, ov, os_ })
 }
 
 func okChecks() []prereq.CheckResult {
@@ -109,7 +111,7 @@ func TestRunDoctor_AllOK_NoError(t *testing.T) {
 func TestRunDoctor_JSONShape(t *testing.T) {
 	stubDiagnose(t, mixedChecks())
 	var buf bytes.Buffer
-	if err := emitDoctorJSON(context.Background(), &buf, mixedChecks()); err != nil {
+	if err := emitDoctorJSON(context.Background(), &buf, stack.NextJS, mixedChecks()); err != nil {
 		t.Fatalf("emitDoctorJSON error: %v", err)
 	}
 
@@ -155,7 +157,7 @@ func TestRunDoctor_JSONShape(t *testing.T) {
 func TestRunDoctor_JSON_AllOK_OKTrue(t *testing.T) {
 	var buf bytes.Buffer
 	stubDiagnose(t, okChecks())
-	if err := emitDoctorJSON(context.Background(), &buf, okChecks()); err != nil {
+	if err := emitDoctorJSON(context.Background(), &buf, stack.NextJS, okChecks()); err != nil {
 		t.Fatalf("emitDoctorJSON error: %v", err)
 	}
 	var rep doctorReport
@@ -169,7 +171,7 @@ func TestRunDoctor_JSON_AllOK_OKTrue(t *testing.T) {
 
 func TestPrintDoctorHuman_FixLinesAndTally(t *testing.T) {
 	var buf bytes.Buffer
-	printDoctorHuman(&buf, mixedChecks())
+	printDoctorHuman(&buf, stack.NextJS, mixedChecks())
 	out := buf.String()
 
 	// One status line per check.
@@ -200,7 +202,7 @@ func TestPrintDoctorHuman_FixLinesAndTally(t *testing.T) {
 
 func TestPrintDoctorHuman_AllOK_NoFixLines(t *testing.T) {
 	var buf bytes.Buffer
-	printDoctorHuman(&buf, okChecks())
+	printDoctorHuman(&buf, stack.NextJS, okChecks())
 	out := buf.String()
 	if strings.Contains(out, "fix [") {
 		t.Errorf("all-ok summary must not render any fix line\n%s", out)
@@ -357,4 +359,82 @@ func TestRunDoctor_BlockingDiagnosis_StillUploads(t *testing.T) {
 	if ok, _ := got["ok"].(bool); ok {
 		t.Error("uploaded report ok should be false when the diagnosis is blocking")
 	}
+}
+
+// ---- stack-aware prerequisites (Workers) ----
+
+func TestDoctorToolsFor(t *testing.T) {
+	if got, want := doctorToolsFor(stack.NextJS), []prereq.Tool{prereq.Git, prereq.Docker, prereq.DockerCompose, prereq.Node}; !sameTools(got, want) {
+		t.Errorf("Next.js tools = %v, want %v", got, want)
+	}
+	if got, want := doctorToolsFor(stack.Workers), []prereq.Tool{prereq.Git, prereq.Node}; !sameTools(got, want) {
+		t.Errorf("Workers tools = %v, want %v (no Docker checks)", got, want)
+	}
+}
+
+func TestRunDoctor_Workers_DiagnosesWithoutDocker(t *testing.T) {
+	stubDiagnose(t, okChecks())
+	var got []prereq.Tool
+	diagnose = func(ctx context.Context, deps prereq.Deps, tools []prereq.Tool) []prereq.CheckResult {
+		got = tools
+		return okChecks()
+	}
+	doctorStack = func() stack.Kind { return stack.Workers }
+	if err := runDoctor(context.Background(), []string{"--no-report"}); err != nil {
+		t.Fatalf("runDoctor: %v", err)
+	}
+	if !sameTools(got, []prereq.Tool{prereq.Git, prereq.Node}) {
+		t.Fatalf("diagnosed tools = %v, want git + node only", got)
+	}
+}
+
+func TestPrintDoctorHuman_Workers_ReportsStack(t *testing.T) {
+	var buf bytes.Buffer
+	printDoctorHuman(&buf, stack.Workers, okChecks())
+	if !strings.Contains(buf.String(), "stack: workers") {
+		t.Fatalf("human output should report the Workers stack\n%s", buf.String())
+	}
+}
+
+func TestPrintDoctorHuman_NextJS_NoStackLine(t *testing.T) {
+	var buf bytes.Buffer
+	printDoctorHuman(&buf, stack.NextJS, okChecks())
+	if strings.Contains(buf.String(), "stack:") {
+		t.Fatalf("Next.js output is unchanged (no stack line)\n%s", buf.String())
+	}
+}
+
+func TestEmitDoctorJSON_Workers_ReportsStack(t *testing.T) {
+	stubDiagnose(t, okChecks())
+	var buf bytes.Buffer
+	if err := emitDoctorJSON(context.Background(), &buf, stack.Workers, okChecks()); err != nil {
+		t.Fatalf("emitDoctorJSON: %v", err)
+	}
+	var raw map[string]any
+	if err := json.Unmarshal(buf.Bytes(), &raw); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+	if raw["stack"] != "workers" {
+		t.Fatalf("stack = %v, want workers\n%s", raw["stack"], buf.String())
+	}
+
+	buf.Reset()
+	if err := emitDoctorJSON(context.Background(), &buf, stack.NextJS, okChecks()); err != nil {
+		t.Fatalf("emitDoctorJSON: %v", err)
+	}
+	if strings.Contains(buf.String(), `"stack"`) {
+		t.Fatalf("Next.js JSON is unchanged (no stack key)\n%s", buf.String())
+	}
+}
+
+func sameTools(a, b []prereq.Tool) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }

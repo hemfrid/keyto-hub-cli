@@ -7,6 +7,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/hemfrid/keyto-hub-cli/internal/prereq"
+	"github.com/hemfrid/keyto-hub-cli/internal/stack"
 )
 
 func baseDeps(rec *[]string) Deps {
@@ -15,9 +18,12 @@ func baseDeps(rec *[]string) Deps {
 		Scripts: func() (map[string]string, error) {
 			return map[string]string{"dev": "next dev", "migrate": "tsx lib/migrate.ts"}, nil
 		},
-		EnsurePrereqs:      func(ctx context.Context) error { *rec = append(*rec, "prereq"); return nil },
+		EnsurePrereqs: func(ctx context.Context, tools []prereq.Tool) error {
+			*rec = append(*rec, "prereq")
+			return nil
+		},
 		EnvSync:            func(ctx context.Context) error { *rec = append(*rec, "envsync"); return nil },
-		EnvFileExists:      func() bool { return true },
+		EnvFileExists:      func(name string) bool { return true },
 		HasCompose:         func() bool { return true },
 		ComposeUp:          func(ctx context.Context) error { *rec = append(*rec, "composeup"); return nil },
 		DBRunning:          func(ctx context.Context) bool { return true },
@@ -54,7 +60,7 @@ func TestRun_NoMarker_Errors(t *testing.T) {
 func TestRun_NoSyncWithoutEnvFile_Errors(t *testing.T) {
 	var rec []string
 	d := baseDeps(&rec)
-	d.EnvFileExists = func() bool { return false }
+	d.EnvFileExists = func(name string) bool { return false }
 	if err := Run(context.Background(), d, Flags{NoSync: true}); err == nil || !strings.Contains(err.Error(), ".env") {
 		t.Fatalf("want .env guard error, got %v", err)
 	}
@@ -181,4 +187,165 @@ func TestRun_MissingNodeModules_Installs(t *testing.T) {
 	if !installed {
 		t.Fatal("expected install to run when node_modules is absent")
 	}
+}
+
+func TestRun_NextJS_PrereqsIncludeDockerAndCompose(t *testing.T) {
+	var rec []string
+	d := baseDeps(&rec)
+	var got []prereq.Tool
+	d.EnsurePrereqs = func(ctx context.Context, tools []prereq.Tool) error { got = tools; return nil }
+	if err := Run(context.Background(), d, Flags{}); err != nil {
+		t.Fatalf("unexpected: %v", err)
+	}
+	want := []prereq.Tool{prereq.Git, prereq.Docker, prereq.DockerCompose, prereq.Node}
+	if !equalTools(got, want) {
+		t.Fatalf("prereqs = %v, want %v", got, want)
+	}
+}
+
+// workersDeps is baseDeps for a Workers repo: no compose file, no DB probe
+// that could succeed, and a migrate script that applies D1 migrations locally.
+func workersDeps(rec *[]string) Deps {
+	d := baseDeps(rec)
+	d.Stack = stack.Workers
+	d.Scripts = func() (map[string]string, error) {
+		return map[string]string{"dev": "node scripts/dev.mjs", "migrate": "wrangler d1 migrations apply DB --local"}, nil
+	}
+	d.HasCompose = func() bool { *rec = append(*rec, "hascompose"); return true }
+	d.DBRunning = func(ctx context.Context) bool { *rec = append(*rec, "dbrunning"); return false }
+	return d
+}
+
+func TestRun_Workers_PrereqsAreGitAndNodeOnly(t *testing.T) {
+	var rec []string
+	d := workersDeps(&rec)
+	var got []prereq.Tool
+	d.EnsurePrereqs = func(ctx context.Context, tools []prereq.Tool) error { got = tools; return nil }
+	if err := Run(context.Background(), d, Flags{}); err != nil {
+		t.Fatalf("unexpected: %v", err)
+	}
+	want := []prereq.Tool{prereq.Git, prereq.Node}
+	if !equalTools(got, want) {
+		t.Fatalf("prereqs = %v, want %v (no Docker, no Compose)", got, want)
+	}
+}
+
+func TestRun_Workers_NoComposeMigrateWithoutDBProbeThenDev(t *testing.T) {
+	var rec []string
+	d := workersDeps(&rec)
+	d.ComposeUp = func(ctx context.Context) error {
+		t.Fatal("ComposeUp must never be called for a Workers repo")
+		return nil
+	}
+	if err := Run(context.Background(), d, Flags{}); err != nil {
+		t.Fatalf("unexpected: %v", err)
+	}
+	want := []string{"prereq", "envsync", "run:migrate", "run:dev"}
+	if strings.Join(rec, ",") != strings.Join(want, ",") {
+		t.Fatalf("step order = %v, want %v (HasCompose and DBRunning are not consulted)", rec, want)
+	}
+}
+
+func TestRun_Workers_NoMigrateScript_SkipsMigrate(t *testing.T) {
+	var rec []string
+	d := workersDeps(&rec)
+	d.Scripts = func() (map[string]string, error) { return map[string]string{"dev": "x"}, nil }
+	if err := Run(context.Background(), d, Flags{}); err != nil {
+		t.Fatalf("unexpected: %v", err)
+	}
+	for _, s := range rec {
+		if s == "run:migrate" {
+			t.Fatal("migrate must not run without a migrate script")
+		}
+	}
+}
+
+func TestRun_Workers_NoMigrateFlag_SkipsMigrate(t *testing.T) {
+	var rec []string
+	d := workersDeps(&rec)
+	if err := Run(context.Background(), d, Flags{NoMigrate: true}); err != nil {
+		t.Fatalf("unexpected: %v", err)
+	}
+	for _, s := range rec {
+		if s == "run:migrate" {
+			t.Fatal("--no-migrate must skip migrate")
+		}
+	}
+}
+
+func TestRun_Workers_InstallBeforeMigrate(t *testing.T) {
+	var rec []string
+	d := workersDeps(&rec)
+	d.NodeModulesPresent = func() bool { return false }
+	if err := Run(context.Background(), d, Flags{}); err != nil {
+		t.Fatalf("unexpected: %v", err)
+	}
+	want := []string{"prereq", "envsync", "install", "run:migrate", "run:dev"}
+	if strings.Join(rec, ",") != strings.Join(want, ",") {
+		t.Fatalf("step order = %v, want %v", rec, want)
+	}
+}
+
+func TestRun_Workers_NoSyncChecksDevVars(t *testing.T) {
+	var rec []string
+	d := workersDeps(&rec)
+	var asked string
+	d.EnvFileExists = func(name string) bool { asked = name; return false }
+	err := Run(context.Background(), d, Flags{NoSync: true})
+	if err == nil || !strings.Contains(err.Error(), ".dev.vars") {
+		t.Fatalf("want a .dev.vars guard error, got %v", err)
+	}
+	if asked != ".dev.vars" {
+		t.Fatalf("EnvFileExists asked for %q, want .dev.vars", asked)
+	}
+}
+
+func TestRun_Workers_StatusLinesNameWranglerDev(t *testing.T) {
+	var rec []string
+	d := workersDeps(&rec)
+	out := &bytes.Buffer{}
+	d.Out = out
+	if err := Run(context.Background(), d, Flags{}); err != nil {
+		t.Fatalf("unexpected: %v", err)
+	}
+	s := out.String()
+	if !strings.Contains(s, "wrangler dev") {
+		t.Fatalf("status lines should name wrangler dev, got:\n%s", s)
+	}
+	if strings.Contains(s, "docker") {
+		t.Fatalf("a Workers boot must not mention docker, got:\n%s", s)
+	}
+}
+
+func TestRun_Workers_MigrateFails_FatalBeforeApp(t *testing.T) {
+	var rec []string
+	d := workersDeps(&rec)
+	d.RunScript = func(ctx context.Context, script string) error {
+		rec = append(rec, "run:"+script)
+		if script == "migrate" {
+			return errors.New("wrangler: connect ECONNREFUSED (D1 migration 0002)")
+		}
+		return nil
+	}
+	err := Run(context.Background(), d, Flags{})
+	if err == nil || strings.Contains(err.Error(), "DATABASE_URL") {
+		t.Fatalf("want a migrate error without the Postgres hint, got %v", err)
+	}
+	for _, s := range rec {
+		if s == "run:dev" {
+			t.Fatal("app must NOT start after a migrate failure")
+		}
+	}
+}
+
+func equalTools(a, b []prereq.Tool) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }

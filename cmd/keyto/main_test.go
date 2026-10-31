@@ -22,6 +22,7 @@ import (
 	"github.com/hemfrid/keyto-hub-cli/internal/hub"
 	"github.com/hemfrid/keyto-hub-cli/internal/prereq"
 	"github.com/hemfrid/keyto-hub-cli/internal/project"
+	"github.com/hemfrid/keyto-hub-cli/internal/stack"
 )
 
 // tipDeps builds a prereq.Deps with scripted detection for startPrereqTip tests.
@@ -73,7 +74,7 @@ func TestStartPrereqTip(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := startPrereqTip(tipDeps(tc.present))
+			got := startPrereqTip(tipDeps(tc.present), stack.NextJS)
 			if tc.wantEmpty {
 				if got != "" {
 					t.Fatalf("expected no tip, got: %q", got)
@@ -89,6 +90,16 @@ func TestStartPrereqTip(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestStartPrereqTip_Workers_NeedsNoDocker(t *testing.T) {
+	if got := startPrereqTip(tipDeps(map[string]string{"node": "v24.2.0"}), stack.Workers); got != "" {
+		t.Fatalf("a Workers checkout with Node needs no tip, got %q", got)
+	}
+	got := startPrereqTip(tipDeps(map[string]string{}), stack.Workers)
+	if !strings.Contains(got, "Node 20") || strings.Contains(got, "Docker") {
+		t.Fatalf("a Workers tip names Node only, got %q", got)
 	}
 }
 
@@ -879,5 +890,25 @@ func TestDispatch_DebugCommandsRouteToRunDebug(t *testing.T) {
 		if gotKind != kind || len(gotArgs) != 3 || gotArgs[0] != "demo-app" {
 			t.Fatalf("%s → kind %q args %v", cmd, gotKind, gotArgs)
 		}
+	}
+}
+
+func TestBootDeps_DetectsStackFromCwd(t *testing.T) {
+	dir := t.TempDir()
+	if got := bootDeps(context.Background(), dir, boot.Flags{}, nil).Stack; got != stack.NextJS {
+		t.Fatalf("plain dir: Stack = %q, want %q", got, stack.NextJS)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "wrangler.jsonc"), []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	d := bootDeps(context.Background(), dir, boot.Flags{}, nil)
+	if d.Stack != stack.Workers {
+		t.Fatalf("wrangler dir: Stack = %q, want %q", d.Stack, stack.Workers)
+	}
+	if err := os.WriteFile(filepath.Join(dir, ".dev.vars"), []byte("KEYTO_DEV_USER=1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if !d.EnvFileExists(".dev.vars") || d.EnvFileExists(".env") {
+		t.Fatal("EnvFileExists must check the named file in cwd")
 	}
 }

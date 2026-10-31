@@ -30,6 +30,7 @@ import (
 	"github.com/hemfrid/keyto-hub-cli/internal/project"
 	"github.com/hemfrid/keyto-hub-cli/internal/selfupdate"
 	"github.com/hemfrid/keyto-hub-cli/internal/shellinit"
+	"github.com/hemfrid/keyto-hub-cli/internal/stack"
 	"github.com/hemfrid/keyto-hub-cli/internal/ui"
 	"golang.org/x/term"
 )
@@ -219,9 +220,9 @@ func runCheckoutImpl(ctx context.Context, args []string) error {
 		return err
 	}
 	emitProjectDir(projectDir)
-	// Non-blocking heads-up: `keyto start` will also need Docker + Node 20+.
-	// Detect-only here — never install or block during checkout.
-	if tip := startPrereqTip(realPrereqDeps(ctx)); tip != "" {
+	// Non-blocking heads-up: `keyto start` will also need Node 20+ (and Docker,
+	// except on a Workers repo). Detect-only here — never install or block.
+	if tip := startPrereqTip(realPrereqDeps(ctx), stack.Detect(projectDir)); tip != "" {
 		fmt.Fprintln(os.Stderr, tip)
 	}
 	return nil
@@ -296,13 +297,17 @@ func gitToplevel(ctx context.Context, dir string) (string, error) {
 	return strings.TrimSpace(string(out)), nil
 }
 
-// startPrereqTip detects (without installing or blocking) whether Docker and a
-// supported Node are present and returns a one-line heads-up for `keyto start`.
-// Returns "" when both are already satisfied. Detect-only: it must never mutate
+// startPrereqTip detects (without installing or blocking) whether the tools
+// `keyto start` needs for the stack — Docker and a supported Node, or Node
+// alone for a Workers repo — are present and returns a one-line heads-up.
+// Returns "" when all are already satisfied. Detect-only: it must never mutate
 // the machine or fail the checkout. Takes prereq.Deps so it's unit-testable.
-func startPrereqTip(deps prereq.Deps) string {
+func startPrereqTip(deps prereq.Deps, kind stack.Kind) string {
+	needs := "Docker + Node 20+"
 	var missing []string
-	if !deps.HasCommand("docker") {
+	if kind == stack.Workers {
+		needs = "Node 20+"
+	} else if !deps.HasCommand("docker") {
 		missing = append(missing, "Docker")
 	}
 	if v, err := deps.Version("node"); err != nil || !deps.HasCommand("node") || !nodeVersionTipOK(v) {
@@ -311,7 +316,7 @@ func startPrereqTip(deps prereq.Deps) string {
 	if len(missing) == 0 {
 		return ""
 	}
-	return fmt.Sprintf("tip: `keyto start` will also need Docker + Node 20+ — missing: %s (run `keyto start` to install)", strings.Join(missing, ", "))
+	return fmt.Sprintf("tip: `keyto start` will also need %s — missing: %s (run `keyto start` to install)", needs, strings.Join(missing, ", "))
 }
 
 // nodeVersionTipOK is the detect-only Node check used by the checkout heads-up.
@@ -373,7 +378,7 @@ func runBootImpl(ctx context.Context, args []string) error {
 
 	fs := flag.NewFlagSet("start", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
-	noSync := fs.Bool("no-sync", false, "reuse the existing .env instead of running env sync")
+	noSync := fs.Bool("no-sync", false, "reuse the existing .env (.dev.vars on Workers) instead of running env sync")
 	noMigrate := fs.Bool("no-migrate", false, "skip applying migrations")
 	noInstall := fs.Bool("no-install", false, "skip npm install even when node_modules is absent")
 	yes := fs.Bool("yes", false, "auto-confirm prerequisite installs")
@@ -415,6 +420,7 @@ func runBootImpl(ctx context.Context, args []string) error {
 // disk (the original behaviour); on retry the minted token is threaded through.
 func bootDeps(ctx context.Context, cwd string, flags boot.Flags, creds *config.Creds) boot.Deps {
 	return boot.Deps{
+		Stack: stack.Detect(cwd),
 		HasMarker: func() bool {
 			m, _ := readMarker(cwd)
 			return m != nil
@@ -422,24 +428,23 @@ func bootDeps(ctx context.Context, cwd string, flags boot.Flags, creds *config.C
 		Scripts: func() (map[string]string, error) {
 			return readPackageScripts(cwd)
 		},
-		EnsurePrereqs: func(ctx context.Context) error {
+		// boot.Run passes the stack's tool list (boot.Prereqs): Docker and the
+		// Compose v2 plugin for Next.js, Git + Node only for Workers.
+		EnsurePrereqs: func(ctx context.Context, tools []prereq.Tool) error {
 			deps := realPrereqDeps(ctx)
-			// start runs `docker compose up`, so the Compose v2 plugin is a
-			// hard prerequisite alongside the docker engine itself.
-			if err := prereq.Ensure(ctx,
-				[]prereq.Tool{prereq.Git, prereq.Docker, prereq.DockerCompose, prereq.Node},
+			if err := prereq.Ensure(ctx, tools,
 				prereq.Opts{Deps: deps, AutoYes: flags.Yes}); err != nil {
 				return err
 			}
 			// Non-fatal Linux advisory: a low inotify watch limit makes
-			// `next dev` hot reload fail with ENOSPC. Print and continue.
+			// dev-server hot reload fail with ENOSPC. Print and continue.
 			if w := (prereq.Opts{Deps: deps}).InotifyWarning(os.ReadFile); w != "" {
 				fmt.Fprintln(os.Stderr, w)
 			}
 			return nil
 		},
 		EnvSync:       func(ctx context.Context) error { return runEnvSyncWithCreds(ctx, nil, creds) },
-		EnvFileExists: func() bool { return fileExists(filepath.Join(cwd, ".env")) },
+		EnvFileExists: func(name string) bool { return fileExists(filepath.Join(cwd, name)) },
 		HasCompose: func() bool {
 			return fileExists(filepath.Join(cwd, "docker-compose.yml")) ||
 				fileExists(filepath.Join(cwd, "docker-compose.yaml"))
@@ -910,6 +915,7 @@ func printUsage() {
 	fmt.Println("  auth        Authenticate with the Keyto Hub (reuses a valid credential; --force to re-issue)")
 	fmt.Println("  checkout    Clone and wire a Keyto project, then cd into it")
 	fmt.Println("  start       Boot the current project locally (prereqs, env sync, compose, migrate, npm run dev)")
+	fmt.Println("              Workers repos (wrangler.json): no Docker; .dev.vars, local D1 migrate, wrangler dev")
 	fmt.Println("              Flags: --no-sync  --no-migrate  --no-install  --yes")
 	fmt.Println("  doctor      Diagnose local prerequisites (git, Docker, Node) and print how to fix them")
 	fmt.Println("              Flags: --json (machine output)  --fix (install fixable ones, consent-gated)")
@@ -917,7 +923,7 @@ func printUsage() {
 	fmt.Println("  update      Update keyto to the latest release")
 	fmt.Println("  shell-init  Print the shell integration snippet (eval \"$(keyto shell-init)\")")
 	fmt.Println("  credential  Git credential helper")
-	fmt.Println("  env sync    Sync UAT secrets into .env for local docker-compose dev")
+	fmt.Println("  env sync    Sync UAT secrets into .env for local docker-compose dev (.dev.vars on Workers)")
 	fmt.Println("              Flags: --env uat|prod  --out <file>  --print  --allow-prod")
 	fmt.Println("  env set     Set/update env vars in UAT or PROD via the Hub")
 	fmt.Println("              Usage: keyto env set KEY=VALUE [KEY2=VALUE2 ...]  |  keyto env set KEY (prompts)")
