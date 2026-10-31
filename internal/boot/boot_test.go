@@ -263,8 +263,13 @@ func TestRun_Workers_NoMigrateScript_SkipsMigrate(t *testing.T) {
 func TestRun_Workers_NoMigrateFlag_SkipsMigrate(t *testing.T) {
 	var rec []string
 	d := workersDeps(&rec)
+	out := &bytes.Buffer{}
+	d.Out = out
 	if err := Run(context.Background(), d, Flags{NoMigrate: true}); err != nil {
 		t.Fatalf("unexpected: %v", err)
+	}
+	if !strings.Contains(out.String(), "skipped (--no-migrate)") {
+		t.Fatalf("the status line should say migrations were skipped by the flag, got:\n%s", out.String())
 	}
 	for _, s := range rec {
 		if s == "run:migrate" {

@@ -142,7 +142,7 @@ func runDoctor(ctx context.Context, args []string) error {
 	// Upload the report to the Hub so it lands in /admin/diagnostics. Default-on
 	// when authenticated; --no-report opts out. Always best-effort: a failed
 	// upload never changes the exit code (that reflects the local diagnosis).
-	maybeReportDoctor(ctx, checks, *report && !*noReport)
+	maybeReportDoctor(ctx, kind, checks, *report && !*noReport)
 
 	if anyBlocking(checks) {
 		return fmt.Errorf("doctor found blocking prerequisite issues — see above")
@@ -155,8 +155,17 @@ func runDoctor(ctx context.Context, args []string) error {
 // flag, missing/expired credential, or upload error each leaves the local
 // diagnosis untouched — at most it prints a one-line note to stderr. The local
 // report has already been written to stdout by the caller.
-func maybeReportDoctor(ctx context.Context, checks []prereq.CheckResult, enabled bool) {
+//
+// A Workers checkout is not uploaded: the Hub's /api/cli/diagnostics schema
+// is .strict() and has no stack field (keyto-hub lib/cli-diagnostics.ts), so
+// the report would land in /admin/diagnostics as a Docker-less machine with
+// the Docker checks silently missing.
+func maybeReportDoctor(ctx context.Context, kind stack.Kind, checks []prereq.CheckResult, enabled bool) {
 	if !enabled {
+		return
+	}
+	if kind == stack.Workers {
+		fmt.Fprintln(os.Stderr, "note: setup report not sent to the Hub — it can't record a Workers checkout yet (Docker checks are skipped here); run `keyto doctor` outside the repo to send one")
 		return
 	}
 	creds, err := config.Load()

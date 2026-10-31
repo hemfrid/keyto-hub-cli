@@ -149,7 +149,9 @@ to be walked through the fixes (plus a fixability tally). Flags:
 
 Inside a Workers checkout (a `wrangler.json`/`wrangler.jsonc` at the root),
 doctor reports `stack: workers` (also as `"stack": "workers"` in `--json`) and
-skips the Docker checks, because a Workers project doesn't use Docker.
+skips the Docker checks, because a Workers project doesn't use Docker. It doesn't
+upload that report to the Hub, which can't record a stack yet; run doctor
+outside the repo to send one.
 
 `keyto start` runs the same checks as part of its preflight, so `keyto doctor` is
 mainly for diagnosing a machine before (or instead of) booting a project.

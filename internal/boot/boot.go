@@ -127,6 +127,8 @@ func Run(ctx context.Context, d Deps, f Flags) error {
 			}
 			return fmt.Errorf("migrations failed (fix the schema and re-run): %w", err)
 		}
+	} else if workers && f.NoMigrate {
+		fmt.Fprintln(d.Out, "• migrations skipped (--no-migrate)")
 	} else if workers {
 		fmt.Fprintln(d.Out, "• no migrations to run")
 	} else {

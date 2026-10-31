@@ -438,3 +438,17 @@ func sameTools(a, b []prereq.Tool) bool {
 	}
 	return true
 }
+
+func TestRunDoctor_Workers_SkipsHubUpload(t *testing.T) {
+	stubDiagnose(t, okChecks())
+	doctorStack = func() stack.Kind { return stack.Workers }
+	_, calls := stubPostDiagnostics(t, nil)
+	authedHome(t)
+
+	if err := runDoctor(context.Background(), nil); err != nil {
+		t.Fatalf("runDoctor: %v", err)
+	}
+	if *calls != 0 {
+		t.Fatalf("postDiagnostics called %d times; the Hub's strict schema has no stack field, so a Workers report must not be uploaded", *calls)
+	}
+}

@@ -253,3 +253,35 @@ func TestBackup_SymlinkedBackupPath_Refused(t *testing.T) {
 		t.Fatalf(".dev.vars must be left alone when the backup can't be made, got %q", got)
 	}
 }
+
+func TestSafeWrite_RemovesStaleTempFilesOnly(t *testing.T) {
+	dir := makeWorkersDir(t, workersEnvironments)
+	// The writer names its temp files "." + base + ".keyto-tmp-" + 16 hex.
+	stale := filepath.Join(dir, "..dev.vars.keyto-tmp-0123456789abcdef")
+	if err := os.WriteFile(stale, []byte("OLD_SECRET=1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	notOurs := filepath.Join(dir, "..dev.vars.keyto-tmp-notes")
+	if err := os.WriteFile(notOurs, []byte("mine\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	victim := plantVictim(t)
+	link := filepath.Join(dir, "..dev.vars.keyto-tmp-fedcba9876543210")
+	if err := os.Symlink(victim, link); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := envsync.Run(context.Background(), nil, baseDeps(t, dir)); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if _, err := os.Lstat(stale); !os.IsNotExist(err) {
+		t.Fatalf("a stale temp file was not removed (err %v)", err)
+	}
+	if _, err := os.Lstat(notOurs); err != nil {
+		t.Fatalf("a file not matching the exact temp pattern was removed: %v", err)
+	}
+	if info, err := os.Lstat(link); err != nil || info.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("a symlink matching the pattern must be left alone (err %v)", err)
+	}
+	assertVictimUntouched(t, victim)
+}

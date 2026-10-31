@@ -2,10 +2,8 @@ package envsync
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"io"
-	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -64,12 +62,12 @@ const devVarsHeader = `# =======================================================
 // order: every entry except platform-auto and skip, minus KEYTO_* keys
 // (returned separately so the caller can say why they were left out).
 func readEnvironmentsKeys(cwd string) (keys, dropped []string, err error) {
-	data, err := os.ReadFile(filepath.Join(cwd, environmentsFile))
+	data, ok, err := readRegularFile(filepath.Join(cwd, environmentsFile))
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return nil, nil, fmt.Errorf("env sync: no %s in this repo — a Workers project lists its secrets there; restore it with `git checkout -- %s`", environmentsFile, environmentsFile)
-		}
-		return nil, nil, fmt.Errorf("env sync: read %s: %w", environmentsFile, err)
+		return nil, nil, err
+	}
+	if !ok {
+		return nil, nil, fmt.Errorf("env sync: no %s in this repo — a Workers project lists its secrets there; restore it with `git checkout -- %s`", environmentsFile, environmentsFile)
 	}
 	var doc environmentsDoc
 	if err := yaml.Unmarshal(data, &doc); err != nil {
@@ -85,7 +83,7 @@ func readEnvironmentsKeys(cwd string) (keys, dropped []string, err error) {
 		}
 		seen[s.Key] = true
 		switch {
-		case strings.HasPrefix(s.Key, platformKeyPrefix):
+		case isPlatformKey(s.Key):
 			dropped = append(dropped, s.Key)
 		case envKeyRe.MatchString(s.Key):
 			keys = append(keys, s.Key)
@@ -101,7 +99,7 @@ func readEnvironmentsKeys(cwd string) (keys, dropped []string, err error) {
 // KEYTO_* assignment replaced by a comment. found=false when there is no
 // marker. disabled names the KEYTO_* keys it neutralised.
 func localOverrides(existing string) (section string, found bool, disabled []string) {
-	lines := strings.Split(existing, "\n")
+	lines, seps := splitDotenvLines(existing)
 	start := -1
 	for i, line := range lines {
 		if strings.EqualFold(strings.TrimSpace(line), localOverridesMarker) {
@@ -112,14 +110,17 @@ func localOverrides(existing string) (section string, found bool, disabled []str
 	if start < 0 {
 		return "", false, nil
 	}
-	kept := lines[start:]
-	for i, line := range kept {
-		if key, ok := assignedKey(line); ok && strings.HasPrefix(key, platformKeyPrefix) {
-			kept[i] = fmt.Sprintf("# removed %s: KEYTO_* keys are set by the platform, never in %s", key, DevVarsFile)
+	var sb strings.Builder
+	for i := start; i < len(lines); i++ {
+		line := lines[i]
+		if key, ok := dotenvKey(line); ok && isPlatformKey(key) {
+			line = fmt.Sprintf("# removed %s: KEYTO_* keys are set by the platform, never in %s", key, DevVarsFile)
 			disabled = append(disabled, key)
 		}
+		sb.WriteString(line)
+		sb.WriteString(seps[i])
 	}
-	section = strings.Join(kept, "\n")
+	section = sb.String()
 	if !strings.HasSuffix(section, "\n") {
 		section += "\n"
 	}
@@ -150,15 +151,48 @@ func backupForeignDevVars(dest, existing, next string, out io.Writer) error {
 	return nil
 }
 
-// assignedKey returns the key a dotenv line assigns ("export KEY=v" included).
-func assignedKey(line string) (string, bool) {
-	t := strings.TrimSpace(line)
-	if t == "" || strings.HasPrefix(t, "#") {
+// wrangler reads .dev.vars with the dotenv package: it turns \r\n and \r into
+// \n and matches each assignment with a multiline JavaScript regex,
+//
+//	^\s*(?:export\s+)?([\w.-]+)(?:\s*=\s*?|:\s+?)…
+//
+// where ^ also matches after U+2028/U+2029 and \s includes Unicode spaces.
+// The filter below finds keys the same way, so no spelling of a KEYTO_* key
+// (a colon, a tab, extra spaces, lower case, a Unicode space or line break)
+// gets past it. It over-matches on purpose: a line whose first token is a
+// KEYTO_ key is removed even if dotenv would not parse it.
+var (
+	dotenvLineSep = regexp.MustCompile(`\r\n|\r|\n|\x{2028}|\x{2029}`)
+	jsSpace       = `[\s\v\x{00a0}\x{1680}\x{2000}-\x{200a}\x{2028}\x{2029}\x{202f}\x{205f}\x{3000}\x{feff}]`
+	dotenvKeyRe   = regexp.MustCompile(`^` + jsSpace + `*(?:export` + jsSpace + `+)?([\w.-]+)`)
+)
+
+// splitDotenvLines splits s at every line break dotenv's ^ recognises and
+// returns the lines plus the separator after each ("" after the last), so
+// the text can be rebuilt byte for byte.
+func splitDotenvLines(s string) (lines, seps []string) {
+	prev := 0
+	for _, loc := range dotenvLineSep.FindAllStringIndex(s, -1) {
+		lines = append(lines, s[prev:loc[0]])
+		seps = append(seps, s[loc[0]:loc[1]])
+		prev = loc[1]
+	}
+	return append(lines, s[prev:]), append(seps, "")
+}
+
+// dotenvKey returns the leading key token of a dotenv line ("export KEY=v"
+// included).
+func dotenvKey(line string) (string, bool) {
+	m := dotenvKeyRe.FindStringSubmatch(line)
+	if m == nil {
 		return "", false
 	}
-	t = strings.TrimSpace(strings.TrimPrefix(t, "export "))
-	key, _, ok := strings.Cut(t, "=")
-	return strings.TrimSpace(key), ok
+	return m[1], true
+}
+
+// isPlatformKey reports whether key is a KEYTO_* key, in any letter case.
+func isPlatformKey(key string) bool {
+	return len(key) >= len(platformKeyPrefix) && strings.EqualFold(key[:len(platformKeyPrefix)], platformKeyPrefix)
 }
 
 // renderDevVars builds the managed part of .dev.vars. KEYTO_DEV_USER=1 is its
@@ -197,7 +231,7 @@ func runWorkers(ctx context.Context, d Deps, marker *project.Marker, targetEnv, 
 		return err
 	}
 	for _, k := range dropped {
-		fmt.Fprintf(d.Out, "note: %s lists %s; not synced (KEYTO_* keys are set by the platform, and a key must be a plain env name)\n", environmentsFile, k)
+		fmt.Fprintf(d.Out, "note: %s lists %q; not synced (KEYTO_* keys are set by the platform, and a key must be a plain env name)\n", environmentsFile, k)
 	}
 
 	values := map[string]string{}

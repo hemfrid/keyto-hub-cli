@@ -5,6 +5,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"testing"
@@ -33,6 +34,8 @@ secrets:
   - key: IGNORED_THING
     category: skip
   - key: KEYTO_AUTH_SESSION_KEY
+    category: operator-required
+  - key: keyto_auth_tenant_id
     category: operator-required
 `
 
@@ -69,19 +72,37 @@ func readFile(t *testing.T, path string) string {
 	return string(b)
 }
 
-// assignedKeys returns the keys of every non-comment KEY=value line.
+// The dotenv grammar wrangler parses .dev.vars with: line starts are \n, \r,
+// U+2028 and U+2029; \s is JavaScript's (Unicode spaces included); a key is
+// [\w.-]+ followed by "=" or ": ".
+var (
+	jsLineSep   = regexp.MustCompile(`\r\n|\r|\n|\x{2028}|\x{2029}`)
+	jsSpace     = `[\s\v\x{00a0}\x{1680}\x{2000}-\x{200a}\x{2028}\x{2029}\x{202f}\x{205f}\x{3000}\x{feff}]`
+	dotenvAssig = regexp.MustCompile(`^` + jsSpace + `*(?:export` + jsSpace + `+)?([\w.-]+)` + jsSpace + `*(?:=|:` + jsSpace + `)`)
+)
+
+// assignedKeys returns the key of every line wrangler's dotenv parse would
+// treat as an assignment.
 func assignedKeys(content string) []string {
 	var keys []string
-	for _, line := range strings.Split(content, "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		if k, _, ok := strings.Cut(line, "="); ok {
-			keys = append(keys, k)
+	for _, line := range jsLineSep.Split(content, -1) {
+		if m := dotenvAssig.FindStringSubmatch(line); m != nil {
+			keys = append(keys, m[1])
 		}
 	}
 	return keys
+}
+
+// platformAssignments returns every assigned key that starts with KEYTO_,
+// case-insensitively.
+func platformAssignments(content string) []string {
+	var out []string
+	for _, k := range assignedKeys(content) {
+		if strings.HasPrefix(strings.ToUpper(k), "KEYTO_") {
+			out = append(out, k)
+		}
+	}
+	return out
 }
 
 func lastNonEmptyLine(content string) string {
@@ -121,7 +142,7 @@ func TestWorkers_KeysComeFromEnvironments(t *testing.T) {
 	}
 	sort.Strings(asked)
 	if strings.Join(asked, ",") != "OPENAI_API_KEY,PUBLIC_FLAG" {
-		t.Fatalf("fetched keys = %v, want operator-required + build-time only (no platform-auto, skip or KEYTO_*)", asked)
+		t.Fatalf("fetched keys = %v, want operator-required + build-time only (no platform-auto, skip or KEYTO_*, any case)", asked)
 	}
 	content := readFile(t, filepath.Join(dir, ".dev.vars"))
 	if envVal(content, "OPENAI_API_KEY") != "sk-test" || envVal(content, "PUBLIC_FLAG") != "on" {
@@ -224,7 +245,21 @@ func TestWorkers_KeytoKeysInLocalOverridesAreDisabled(t *testing.T) {
 	dir := makeWorkersDir(t, workersEnvironments)
 	d := baseDeps(t, dir)
 	path := filepath.Join(dir, ".dev.vars")
-	if err := os.WriteFile(path, []byte("# local overrides below\nKEYTO_AUTH_CLIENT_ID=abc\nexport KEYTO_PUBLIC_URL=http://x\nKEYTO_DEV_USER=0\nOK_KEY=1\n"), 0o600); err != nil {
+	overrides := strings.Join([]string{
+		"# local overrides below",
+		"KEYTO_AUTH_CLIENT_ID=abc",
+		"export KEYTO_PUBLIC_URL=http://x",
+		"KEYTO_DEV_USER=0",
+		"KEYTO_DEV_USER: 0",                     // dotenv's colon form
+		"export\tKEYTO_AUTH_CLIENT_SECRET=abc",  // tab after export
+		"KEYTO_EXPOSURE   =   external-sso",     // spaces around =
+		"keyto_auth_allowed_domains=x.com",      // lower case
+		"\u00a0KEYTO_AUTH_TENANT_ID=t",          // a JS-only space
+		"OTHER=2\u2028KEYTO_AUTH_SESSION_KEY=s", // a JS-only line break
+		"OK_KEY=1",
+		"",
+	}, "\n")
+	if err := os.WriteFile(path, []byte(overrides), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	out := &bytes.Buffer{}
@@ -233,22 +268,50 @@ func TestWorkers_KeytoKeysInLocalOverridesAreDisabled(t *testing.T) {
 		t.Fatalf("Run: %v", err)
 	}
 	content := readFile(t, path)
-	for _, k := range assignedKeys(content) {
-		if strings.HasPrefix(k, "KEYTO_") && k != "KEYTO_DEV_USER" {
-			t.Fatalf(".dev.vars still assigns %s:\n%s", k, content)
-		}
-		if strings.HasPrefix(strings.TrimPrefix(k, "export "), "KEYTO_") && k != "KEYTO_DEV_USER" {
-			t.Fatalf(".dev.vars still assigns %s:\n%s", k, content)
-		}
+	if got := platformAssignments(content); strings.Join(got, ",") != "KEYTO_DEV_USER" {
+		t.Fatalf("KEYTO_* assignments = %v, want only the managed KEYTO_DEV_USER:\n%s", got, content)
 	}
-	if strings.Contains(content, "\nKEYTO_DEV_USER=0") {
-		t.Fatalf("an override must not switch the dev user off:\n%s", content)
+	if strings.Count(content, "\nKEYTO_DEV_USER=1\n") != 1 {
+		t.Fatalf("the dev user line is missing or doubled:\n%s", content)
 	}
-	if !strings.Contains(content, "\nOK_KEY=1\n") {
+	if !strings.Contains(content, "\nOK_KEY=1\n") || !strings.Contains(content, "\nOTHER=2\u2028") {
 		t.Fatalf("a non-KEYTO override was lost:\n%s", content)
 	}
-	if !strings.Contains(out.String(), "KEYTO_AUTH_CLIENT_ID") {
-		t.Fatalf("the user should be told which override was disabled, got: %s", out.String())
+	for _, k := range []string{"KEYTO_AUTH_CLIENT_ID", "KEYTO_DEV_USER", "keyto_auth_allowed_domains", "KEYTO_AUTH_SESSION_KEY"} {
+		if !strings.Contains(out.String(), k) {
+			t.Fatalf("the user should be told %s was disabled, got: %s", k, out.String())
+		}
+	}
+}
+
+func TestWorkers_EnvironmentsKeyIsPrintedEscaped(t *testing.T) {
+	dir := makeWorkersDir(t, "schemaVersion: 1\nsecrets:\n  - key: \"\\e[31mEVIL\"\n    category: operator-required\n")
+	out := &bytes.Buffer{}
+	d := baseDeps(t, dir)
+	d.Out = out
+	if err := envsync.Run(context.Background(), nil, d); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if strings.Contains(out.String(), "\x1b") {
+		t.Fatalf("a terminal escape from .environments reached the terminal: %q", out.String())
+	}
+	if !strings.Contains(out.String(), `"\x1b[31mEVIL"`) {
+		t.Fatalf("the skipped key should be printed quoted, got: %q", out.String())
+	}
+}
+
+func TestWorkers_SymlinkedEnvironments_Refused(t *testing.T) {
+	dir := makeWorkersDir(t, "")
+	target := filepath.Join(t.TempDir(), "elsewhere.yaml")
+	if err := os.WriteFile(target, []byte(workersEnvironments), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, filepath.Join(dir, ".environments")); err != nil {
+		t.Fatal(err)
+	}
+	err := envsync.Run(context.Background(), nil, baseDeps(t, dir))
+	if err == nil || !strings.Contains(err.Error(), ".environments") || !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("want a symlink refusal naming .environments, got %v", err)
 	}
 }
 

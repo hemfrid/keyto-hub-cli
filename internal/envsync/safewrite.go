@@ -9,6 +9,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
 )
 
 // A cloned repo is untrusted: it can ship .env or .dev.vars as a symlink to
@@ -18,7 +19,11 @@ import (
 // goes to a fresh O_EXCL temp file in the same directory, and a rename puts it
 // in place (a rename replaces the directory entry, never a link's target).
 
-const tempAttempts = 5
+const (
+	tempAttempts = 5
+	tempInfix    = ".keyto-tmp-"
+	tempRandLen  = 8 // bytes; 16 hex characters in the name
+)
 
 // checkRegularOrAbsent returns exists=false when nothing is at path, and an
 // error naming the file when path is a symlink or not a regular file.
@@ -68,6 +73,7 @@ func writeEnvFile(path, content string) error {
 	if _, err := checkRegularOrAbsent(path); err != nil {
 		return err
 	}
+	removeStaleTemps(dir, filepath.Base(path))
 	tmp, f, err := createTemp(dir, filepath.Base(path))
 	if err != nil {
 		return fmt.Errorf("env sync: write %s: %w", path, err)
@@ -88,11 +94,11 @@ func writeEnvFile(path, content string) error {
 func createTemp(dir, base string) (string, *os.File, error) {
 	var lastErr error
 	for i := 0; i < tempAttempts; i++ {
-		var b [8]byte
+		var b [tempRandLen]byte
 		if _, err := rand.Read(b[:]); err != nil {
 			return "", nil, err
 		}
-		name := filepath.Join(dir, "."+base+".keyto-tmp-"+hex.EncodeToString(b[:]))
+		name := filepath.Join(dir, "."+base+tempInfix+hex.EncodeToString(b[:]))
 		f, err := os.OpenFile(name, os.O_WRONLY|os.O_CREATE|os.O_EXCL|oNoFollow, 0o600)
 		if err == nil {
 			return name, f, nil
@@ -103,6 +109,23 @@ func createTemp(dir, base string) (string, *os.File, error) {
 		}
 	}
 	return "", nil, lastErr
+}
+
+// removeStaleTemps deletes temp files an interrupted sync left next to base
+// (they may hold secrets). Only regular files with exactly createTemp's name
+// shape go; a symlink or anything else is left alone. Best-effort.
+func removeStaleTemps(dir, base string) {
+	pattern := regexp.MustCompile(`^\.` + regexp.QuoteMeta(base+tempInfix) + fmt.Sprintf(`[0-9a-f]{%d}$`, tempRandLen*2))
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	for _, e := range entries {
+		// ReadDir reports the entry's own type (it doesn't follow links).
+		if e.Type().IsRegular() && pattern.MatchString(e.Name()) {
+			_ = os.Remove(filepath.Join(dir, e.Name()))
+		}
+	}
 }
 
 func fillAndClose(f *os.File, content string) error {
