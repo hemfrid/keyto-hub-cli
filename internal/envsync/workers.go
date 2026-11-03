@@ -30,6 +30,7 @@ const (
 	platformKeyPrefix    = "KEYTO_"
 	devUserLine          = "KEYTO_DEV_USER=1"
 	backupSuffix         = ".keyto-backup"
+	maxBackups           = 100
 )
 
 // envKeyRe is a dotenv-safe key: anything else could break the line format.
@@ -127,28 +128,37 @@ func localOverrides(existing string) (section string, found bool, disabled []str
 	return section, true, disabled
 }
 
-// backupForeignDevVars keeps a one-time copy of a .dev.vars env sync didn't
-// write (no managed header, no overrides section) before it is replaced, so
-// hand edits aren't lost. An existing backup is never overwritten: a later
-// sync would only copy env sync's own output over the user's original.
+// backupForeignDevVars copies a .dev.vars env sync didn't write (no managed
+// header, no overrides section) aside before it is replaced, so hand edits
+// aren't lost: to .dev.vars.keyto-backup, then -2, -3 and so on. A backup is
+// never overwritten, and content already saved in one isn't saved again.
 func backupForeignDevVars(dest, existing, next string, out io.Writer) error {
 	if existing == next || strings.HasPrefix(existing, devVarsHeader) {
 		return nil
 	}
-	backup := dest + backupSuffix
-	exists, err := checkRegularOrAbsent(backup)
-	if err != nil {
-		return err
-	}
-	if exists {
-		fmt.Fprintf(out, "note: %s was not written by env sync; replacing it (an earlier backup is kept at %s)\n", dest, backup)
+	for n := 1; n <= maxBackups; n++ {
+		backup := dest + backupSuffix
+		if n > 1 {
+			backup += fmt.Sprintf("-%d", n)
+		}
+		saved, exists, err := readRegularFile(backup)
+		if err != nil {
+			return err
+		}
+		if exists {
+			if string(saved) == existing {
+				fmt.Fprintf(out, "note: %s was not written by env sync; replacing it (this content is already saved at %s)\n", dest, backup)
+				return nil
+			}
+			continue
+		}
+		if err := writeEnvFile(backup, existing); err != nil {
+			return err
+		}
+		fmt.Fprintf(out, "note: %s was not written by env sync; your copy is saved at %s\n", dest, backup)
 		return nil
 	}
-	if err := writeEnvFile(backup, existing); err != nil {
-		return err
-	}
-	fmt.Fprintf(out, "note: %s was not written by env sync; your copy is saved at %s\n", dest, backup)
-	return nil
+	return fmt.Errorf("env sync: %s was not written by env sync and there are already %d backups of it (%s*); remove the ones you don't need and re-run", dest, maxBackups, dest+backupSuffix)
 }
 
 // wrangler reads .dev.vars with the dotenv package: it turns \r\n and \r into

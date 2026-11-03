@@ -90,8 +90,8 @@ The everyday loop is **`keyto checkout <project>` → `keyto start`**:
 > Windows path or a tab reach the app unchanged; a value no quoting can carry
 > exactly (one that needs `'`, `` ` `` and `"` at once, for example) is left
 > out, with a note naming the key. A `.dev.vars` that env sync didn't write is
-> saved once to `.dev.vars.keyto-backup` before it is replaced. `keyto env
-> sync` refuses a
+> saved to `.dev.vars.keyto-backup` (then `-2`, `-3`, …) before it is
+> replaced. `keyto env sync` refuses a
 > `.env` or `.dev.vars` that is a symlink or not a regular file, so a cloned
 > repo can't redirect your secrets elsewhere.
 

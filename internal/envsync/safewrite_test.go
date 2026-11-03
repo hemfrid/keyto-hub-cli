@@ -204,6 +204,50 @@ func TestBackup_HandWrittenDevVarsIsKeptOnce(t *testing.T) {
 	}
 }
 
+func TestBackup_LaterHandWrittenDevVarsGetsANumberedBackup(t *testing.T) {
+	dir := makeWorkersDir(t, workersEnvironments)
+	path := filepath.Join(dir, ".dev.vars")
+	backup := path + ".keyto-backup"
+	sync := func(handWritten string) string {
+		t.Helper()
+		if err := os.WriteFile(path, []byte(handWritten), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		out := &bytes.Buffer{}
+		d := baseDeps(t, dir)
+		d.Out = out
+		if err := envsync.Run(context.Background(), nil, d); err != nil {
+			t.Fatalf("Run: %v", err)
+		}
+		return out.String()
+	}
+	const first, second = "API_TOKEN=first\n", "API_TOKEN=second\n"
+	sync(first)
+	out := sync(second)
+
+	if got := readFile(t, backup); got != first {
+		t.Fatalf("the first backup changed: %q", got)
+	}
+	if got := readFile(t, backup+"-2"); got != second {
+		t.Fatalf("second backup = %q, want the second hand-written file", got)
+	}
+	if info, err := os.Lstat(backup + "-2"); err != nil || info.Mode().Perm() != 0o600 {
+		t.Fatalf("second backup mode = %v (err %v), want 0600", info.Mode(), err)
+	}
+	if !strings.Contains(out, backup+"-2") {
+		t.Fatalf("the user should be told where the second backup went, got: %s", out)
+	}
+
+	// The same hand-written content again is already saved: no third copy.
+	out = sync(second)
+	if _, err := os.Lstat(backup + "-3"); !os.IsNotExist(err) {
+		t.Fatalf("a file identical to an existing backup was backed up again (err %v)", err)
+	}
+	if !strings.Contains(out, backup+"-2") {
+		t.Fatalf("the user should be told the copy is already at %s-2, got: %s", backup, out)
+	}
+}
+
 func TestBackup_NotTakenForOwnOutputOrWithMarker(t *testing.T) {
 	dir := makeWorkersDir(t, workersEnvironments)
 	path := filepath.Join(dir, ".dev.vars")
