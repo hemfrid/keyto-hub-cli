@@ -102,7 +102,7 @@ func localOverrides(existing string) (section string, found bool, disabled []str
 	lines, seps := splitDotenvLines(existing)
 	start := -1
 	for i, line := range lines {
-		if strings.EqualFold(strings.TrimSpace(line), localOverridesMarker) {
+		if isOverridesMarker(line) {
 			start = i
 			break
 		}
@@ -195,14 +195,22 @@ func isPlatformKey(key string) bool {
 	return len(key) >= len(platformKeyPrefix) && strings.EqualFold(key[:len(platformKeyPrefix)], platformKeyPrefix)
 }
 
+// unwritableValue is a key left out of .dev.vars because no spelling of its
+// value reads back unchanged; reason never contains the value.
+type unwritableValue struct {
+	key, reason string
+}
+
 // renderDevVars builds the managed part of .dev.vars. KEYTO_DEV_USER=1 is its
-// last line; the Hub's values never include a KEYTO_* key.
-func renderDevVars(keys []string, values map[string]string, missing []string, targetEnv string) string {
+// last line; the Hub's values never include a KEYTO_* key. Values are quoted
+// for wrangler's dotenv (quoteDevVarsValue), not with the .env rules.
+func renderDevVars(keys []string, values map[string]string, missing []string, targetEnv string) (string, []unwritableValue) {
 	missingSet := map[string]bool{}
 	for _, k := range missing {
 		missingSet[k] = true
 	}
 	var sb strings.Builder
+	var unwritable []unwritableValue
 	sb.WriteString(devVarsHeader)
 	sb.WriteString("\n")
 	if len(keys) > 0 {
@@ -213,13 +221,19 @@ func renderDevVars(keys []string, values map[string]string, missing []string, ta
 				fmt.Fprintf(&sb, "# MISSING: %s (not set in %s)\n", k, targetEnv)
 				continue
 			}
-			fmt.Fprintf(&sb, "%s=%s\n", k, quoteEnvValue(val))
+			quoted, err := quoteDevVarsValue(val)
+			if err != nil {
+				fmt.Fprintf(&sb, "# NOT WRITTEN: %s (its value can't be written so wrangler reads it back unchanged: %s)\n", k, err)
+				unwritable = append(unwritable, unwritableValue{key: k, reason: err.Error()})
+				continue
+			}
+			fmt.Fprintf(&sb, "%s=%s\n", k, quoted)
 		}
 		sb.WriteString("\n")
 	}
 	sb.WriteString("# Signs you in as the local dev user (@hemfrid/workers-auth).\n")
 	sb.WriteString(devUserLine + "\n")
-	return sb.String()
+	return sb.String(), unwritable
 }
 
 // runWorkers is `keyto env sync` for a Workers repo: .dev.vars from
@@ -260,7 +274,10 @@ func runWorkers(ctx context.Context, d Deps, marker *project.Marker, targetEnv, 
 		fmt.Fprintf(d.Out, "note: removed %s from the %s local overrides — any KEYTO_* key there turns the local dev user off\n", k, DevVarsFile)
 	}
 
-	content := renderDevVars(keys, values, missing, targetEnv)
+	content, unwritable := renderDevVars(keys, values, missing, targetEnv)
+	for _, u := range unwritable {
+		fmt.Fprintf(d.Out, "note: %s left out of %s: its value can't be written so wrangler reads it back unchanged (%s); change it in the Hub (%s) to use it locally\n", u.key, DevVarsFile, u.reason, targetEnv)
+	}
 	if overrides != "" {
 		content += "\n" + overrides
 	}

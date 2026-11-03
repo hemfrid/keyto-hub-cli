@@ -85,9 +85,13 @@ The everyday loop is **`keyto checkout <project>` → `keyto start`**:
 > is refused when any other `KEYTO_*` key is present, so keep them out of the
 > file. For your own local values, end `.dev.vars` with the line
 > `# local overrides below` and put them under it: every sync keeps that
-> section as it is (a `KEYTO_*` line there is removed, with a note). A
-> `.dev.vars` that env sync didn't write is saved once to
-> `.dev.vars.keyto-backup` before it is replaced. `keyto env sync` refuses a
+> section as it is (a `KEYTO_*` line there is removed, with a note). Values
+> are quoted the way wrangler's dotenv reads `.dev.vars`, so a JSON key, a
+> Windows path or a tab reach the app unchanged; a value no quoting can carry
+> exactly (one that needs `'`, `` ` `` and `"` at once, for example) is left
+> out, with a note naming the key. A `.dev.vars` that env sync didn't write is
+> saved once to `.dev.vars.keyto-backup` before it is replaced. `keyto env
+> sync` refuses a
 > `.env` or `.dev.vars` that is a symlink or not a regular file, so a cloned
 > repo can't redirect your secrets elsewhere.
 
