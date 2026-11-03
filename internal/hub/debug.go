@@ -1,8 +1,10 @@
 package hub
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -134,6 +136,75 @@ type DebugArgo struct {
 	} `json:"lastOperation"`
 }
 
+// A Workers project's runtime prints a status line once a minute; the Hub
+// passes on the newest one (keyto-hub lib/workers-status.ts). Its keys are a
+// floor: the runtime may add keys, which decoding ignores. Every string in it
+// is the app's own claim, so it is printed sanitised like any server text.
+// Sizes and counts are JSON numbers, kept as float64 so an unexpected
+// fraction can't fail the whole decode.
+type DebugWorkersD1 struct {
+	Binding    string   `json:"binding"`
+	Bytes      float64  `json:"bytes"`
+	Migrations []string `json:"migrations"`
+}
+
+type DebugWorkersKV struct {
+	Binding string  `json:"binding"`
+	Keys    float64 `json:"keys"`
+}
+
+type DebugWorkersSnapshot struct {
+	Key     string `json:"key"`
+	TakenAt string `json:"takenAt"`
+	Reason  string `json:"reason"`
+}
+
+type DebugWorkersStatus struct {
+	Runtime      string                `json:"runtime"`
+	Workerd      string                `json:"workerd"`
+	D1           []DebugWorkersD1      `json:"d1"`
+	KV           []DebugWorkersKV      `json:"kv"`
+	LastSnapshot *DebugWorkersSnapshot `json:"lastSnapshot"`
+}
+
+// DebugD1 is a Workers project's database view. Status is nil when the
+// runtime logged no status line in the Hub's window.
+type DebugD1 struct {
+	Status *DebugWorkersStatus `json:"status"`
+}
+
+// DebugDatabase is GET …/debug/database: the bare CNPG cluster array for a
+// Next.js project, or {"kind":"d1","status":…} for a Workers project. D1 is
+// nil for the array.
+type DebugDatabase struct {
+	Clusters []DebugDbCluster
+	D1       *DebugD1
+}
+
+// ErrUnknownDatabaseShape is a database answer that is neither shape, e.g. a
+// kind a newer Hub added.
+var ErrUnknownDatabaseShape = errors.New("the Hub answered a database shape this keyto doesn't know; run `keyto update`")
+
+func (d *DebugDatabase) UnmarshalJSON(b []byte) error {
+	trimmed := bytes.TrimLeft(b, " \t\r\n")
+	if len(trimmed) > 0 && trimmed[0] == '[' {
+		*d = DebugDatabase{}
+		return json.Unmarshal(b, &d.Clusters)
+	}
+	var obj struct {
+		Kind string `json:"kind"`
+		DebugD1
+	}
+	if err := json.Unmarshal(b, &obj); err != nil {
+		return err
+	}
+	if obj.Kind != "d1" {
+		return ErrUnknownDatabaseShape
+	}
+	*d = DebugDatabase{D1: &obj.DebugD1}
+	return nil
+}
+
 type DebugOverview struct {
 	Env             string                 `json:"env"`
 	Argo            *DebugArgo             `json:"argo"`
@@ -141,6 +212,26 @@ type DebugOverview struct {
 	Warnings        []DebugEvent           `json:"warnings"`
 	ExternalSecrets *[]DebugExternalSecret `json:"externalSecrets"`
 	Databases       *[]DebugDbCluster      `json:"databases"`
+	// D1 is a Workers project's runtime status. HasD1 tells a Workers
+	// overview whose D1 is null (status unavailable) from a Next.js one,
+	// which has no d1 key at all.
+	D1    *DebugD1 `json:"d1"`
+	HasD1 bool     `json:"-"`
+}
+
+func (o *DebugOverview) UnmarshalJSON(b []byte) error {
+	type plain DebugOverview
+	var p plain
+	if err := json.Unmarshal(b, &p); err != nil {
+		return err
+	}
+	var keys map[string]json.RawMessage
+	if err := json.Unmarshal(b, &keys); err != nil {
+		return err
+	}
+	_, p.HasD1 = keys["d1"]
+	*o = DebugOverview(p)
+	return nil
 }
 
 type DebugLogs struct {

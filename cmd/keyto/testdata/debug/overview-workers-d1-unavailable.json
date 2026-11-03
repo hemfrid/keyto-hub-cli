@@ -1,0 +1,80 @@
+{
+  "env": "prod",
+  "argo": {
+    "sync": "Synced",
+    "health": "Degraded",
+    "conditions": [
+      {
+        "type": "SyncError",
+        "message": "one resource failed"
+      }
+    ],
+    "unhealthyResources": [
+      {
+        "kind": "Deployment",
+        "name": "acme-web",
+        "health": "Degraded",
+        "message": "rollout stuck"
+      }
+    ],
+    "lastOperation": {
+      "phase": "Failed",
+      "message": "sync failed"
+    }
+  },
+  "pods": [
+    {
+      "name": "acme-web-1",
+      "phase": "Running",
+      "ready": true,
+      "restarts": 0,
+      "startedAt": "2026-11-03T09:00:00Z",
+      "image": "acme:1",
+      "containers": [
+        {
+          "name": "web",
+          "ready": true,
+          "restarts": 0,
+          "state": "running",
+          "reason": null,
+          "lastTermination": null
+        }
+      ]
+    },
+    {
+      "name": "acme-web-2",
+      "phase": "Running",
+      "ready": false,
+      "restarts": 3,
+      "startedAt": "2026-11-03T09:00:00Z",
+      "image": "acme:1",
+      "containers": [
+        {
+          "name": "web",
+          "ready": false,
+          "restarts": 3,
+          "state": "waiting",
+          "reason": "CrashLoopBackOff",
+          "lastTermination": {
+            "reason": "OOMKilled",
+            "exitCode": 137,
+            "finishedAt": "2026-11-03T09:10:00Z"
+          }
+        }
+      ]
+    }
+  ],
+  "warnings": [
+    {
+      "type": "Warning",
+      "reason": "BackOff",
+      "object": "Pod/acme-web-2",
+      "message": "Back-off restarting failed container",
+      "count": 4,
+      "lastSeen": "2026-11-03T09:11:00Z"
+    }
+  ],
+  "externalSecrets": [],
+  "databases": [],
+  "d1": null
+}

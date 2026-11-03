@@ -1,0 +1,15 @@
+{
+  "kind": "d1",
+  "status": {
+    "runtime": "v1.2.0",
+    "workerd": "1.20261010.0",
+    "d1": [
+      {"binding": "DB", "bytes": 1572864, "migrations": ["0001_init.sql", "0002_users.sql", "0003_sessions.sql"], "pages": 384},
+      {"binding": "AUDIT", "bytes": 4096, "migrations": []}
+    ],
+    "kv": [{"binding": "CACHE", "keys": 12}, {"binding": "FLAGS", "keys": 1}],
+    "lastSnapshot": {"key": "snapshots/2026-11-03T09-00-00Z.tar.zst", "takenAt": "2026-11-03T09:00:00Z", "reason": "scheduled", "bytes": 99},
+    "futureField": {"anything": true}
+  },
+  "futureTopLevel": 1
+}

@@ -1,0 +1,4 @@
+[
+  {"name": "acme-pg", "phase": "Cluster in healthy state", "instances": 2, "readyInstances": 2, "primary": "acme-pg-1", "lastFailover": "2026-11-01T08:00:00Z"},
+  {"name": "acme-pg-replica", "phase": null, "instances": null, "readyInstances": 0, "primary": null, "lastFailover": null}
+]

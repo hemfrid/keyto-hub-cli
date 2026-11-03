@@ -1,0 +1,18 @@
+Deployment (prod): Synced / Degraded
+  last sync: Failed: sync failed
+  SyncError: one resource failed
+  Deployment/acme-web: Degraded rollout stuck
+
+Pods:
+NAME        PHASE    READY  RESTARTS  LAST PROBLEM
+acme-web-1  Running  true   0         -
+acme-web-2  Running  false  3         OOMKilled (exit 137)
+
+Warning events (last hour):
+LAST SEEN             TYPE     REASON   OBJECT          MESSAGE
+2026-11-03T09:11:00Z  Warning  BackOff  Pod/acme-web-2  Back-off restarting failed container
+
+Secret sync:
+  none
+
+Workers runtime: no status line in the last 3 minutes (it logs one a minute)

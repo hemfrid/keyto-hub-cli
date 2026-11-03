@@ -365,6 +365,72 @@ func renderDbs(w io.Writer, c palette, dbs []hub.DebugDbCluster) {
 	}
 }
 
+// byteUnits/formatBytes match the Hub's Debug tab (keyto-hub
+// lib/workers-status.ts formatBytes): binary units, one decimal under 10.
+var byteUnits = []string{"B", "KiB", "MiB", "GiB", "TiB"}
+
+func formatBytes(n float64) string {
+	value, unit := n, 0
+	for value >= 1024 && unit < len(byteUnits)-1 {
+		value /= 1024
+		unit++
+	}
+	if unit > 0 && value < 10 {
+		value = math.Round(value*10) / 10
+	} else {
+		value = math.Round(value)
+	}
+	return strconv.FormatFloat(value, 'f', -1, 64) + " " + byteUnits[unit]
+}
+
+func formatCount(n float64, one, many string) string {
+	if n == 1 {
+		return "1 " + one
+	}
+	return strconv.FormatFloat(n, 'f', -1, 64) + " " + many
+}
+
+func migrationsLabel(d hub.DebugWorkersD1) string {
+	if len(d.Migrations) == 0 {
+		return "none applied"
+	}
+	return fmt.Sprintf("%d applied, newest %s", len(d.Migrations), d.Migrations[len(d.Migrations)-1])
+}
+
+// renderD1 prints a Workers project's D1 and KV bindings and last snapshot,
+// from the runtime's newest status line. d is nil when the Hub couldn't read
+// the status at all. The status line shares stdout with the app, so every
+// string in it goes through cleanCell: sanitised and kept on one line.
+func renderD1(w io.Writer, c palette, d *hub.DebugD1) {
+	switch {
+	case d == nil:
+		fmt.Fprintln(w, "Workers runtime: status unavailable")
+		return
+	case d.Status == nil:
+		fmt.Fprintln(w, "Workers runtime: no status line in the last 3 minutes (it logs one a minute)")
+		return
+	}
+	s := d.Status
+	fmt.Fprintf(w, "Workers runtime %s (workerd %s):\n", cleanCell(s.Runtime), cleanCell(s.Workerd))
+	if len(s.D1) == 0 && len(s.KV) == 0 {
+		fmt.Fprintln(w, "No D1 or KV bindings.")
+	} else {
+		rows := make([][]cell, 0, len(s.D1)+len(s.KV))
+		for _, b := range s.D1 {
+			rows = append(rows, []cell{{b.Binding, nil}, {"D1", nil}, {formatBytes(b.Bytes), nil}, {migrationsLabel(b), nil}})
+		}
+		for _, b := range s.KV {
+			rows = append(rows, []cell{{b.Binding, nil}, {"KV", nil}, {formatCount(b.Keys, "key", "keys"), nil}, {"-", c.dim}})
+		}
+		writeTable(w, []string{"BINDING", "KIND", "SIZE", "MIGRATIONS"}, rows)
+	}
+	if snap := s.LastSnapshot; snap == nil {
+		fmt.Fprintln(w, "Last snapshot: "+c.dim("none yet"))
+	} else {
+		fmt.Fprintf(w, "Last snapshot: %s, %s (%s)\n", cleanCell(snap.Reason), cleanCell(snap.TakenAt), cleanCell(snap.Key))
+	}
+}
+
 func renderOverview(w io.Writer, c palette, o hub.DebugOverview) {
 	if o.Argo != nil {
 		fmt.Fprintf(w, "Deployment (%s): %s / %s\n", c.s(o.Env), c.stateTone(c.s(o.Argo.Sync)), c.stateTone(c.s(o.Argo.Health)))
@@ -399,11 +465,20 @@ func renderOverview(w io.Writer, c palette, o hub.DebugOverview) {
 			fmt.Fprintf(w, "  %s: %s\n", c.s(s.Name), state)
 		}
 	}
-	if o.Databases == nil {
+	// A Workers overview keeps databases: [] (it has no CNPG cluster) and adds
+	// d1; "No databases." would contradict the D1 section, so it is left out.
+	workersOnly := o.HasD1 && o.Databases != nil && len(*o.Databases) == 0
+	switch {
+	case workersOnly:
+	case o.Databases == nil:
 		fmt.Fprintln(w, "\nDatabases: unavailable")
-	} else {
+	default:
 		fmt.Fprintln(w, "\nDatabases:")
 		renderDbs(w, c, *o.Databases)
+	}
+	if o.HasD1 {
+		fmt.Fprintln(w)
+		renderD1(w, c, o.D1)
 	}
 }
 
@@ -435,11 +510,15 @@ func renderDebugColour(w io.Writer, kind string, raw json.RawMessage, asJSON boo
 		}
 		renderEvents(w, c, ev)
 	case "database":
-		var dbs []hub.DebugDbCluster
-		if err := json.Unmarshal(raw, &dbs); err != nil {
+		var db hub.DebugDatabase
+		if err := json.Unmarshal(raw, &db); err != nil {
 			return err
 		}
-		renderDbs(w, c, dbs)
+		if db.D1 != nil {
+			renderD1(w, c, db.D1)
+		} else {
+			renderDbs(w, c, db.Clusters)
+		}
 	case "logs":
 		var l hub.DebugLogs
 		if err := json.Unmarshal(raw, &l); err != nil {
