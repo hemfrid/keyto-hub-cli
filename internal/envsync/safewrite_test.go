@@ -300,9 +300,14 @@ func TestBackup_SymlinkedBackupPath_Refused(t *testing.T) {
 
 func TestSafeWrite_RemovesStaleTempFilesOnly(t *testing.T) {
 	dir := makeWorkersDir(t, workersEnvironments)
-	// The writer names its temp files "." + base + ".keyto-tmp-" + 16 hex.
-	stale := filepath.Join(dir, "..dev.vars.keyto-tmp-0123456789abcdef")
+	// The writer names its temp files base + ".keyto-tmp-" + 16 hex +
+	// ".local"; before that it used "." + base + ".keyto-tmp-" + 16 hex.
+	stale := filepath.Join(dir, ".dev.vars.keyto-tmp-0123456789abcdef.local")
 	if err := os.WriteFile(stale, []byte("OLD_SECRET=1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	staleOldName := filepath.Join(dir, "..dev.vars.keyto-tmp-0123456789abcdef")
+	if err := os.WriteFile(staleOldName, []byte("OLD_SECRET=1\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	notOurs := filepath.Join(dir, "..dev.vars.keyto-tmp-notes")
@@ -318,8 +323,10 @@ func TestSafeWrite_RemovesStaleTempFilesOnly(t *testing.T) {
 	if err := envsync.Run(context.Background(), nil, baseDeps(t, dir)); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	if _, err := os.Lstat(stale); !os.IsNotExist(err) {
-		t.Fatalf("a stale temp file was not removed (err %v)", err)
+	for _, p := range []string{stale, staleOldName} {
+		if _, err := os.Lstat(p); !os.IsNotExist(err) {
+			t.Fatalf("a stale temp file was not removed: %s (err %v)", filepath.Base(p), err)
+		}
 	}
 	if _, err := os.Lstat(notOurs); err != nil {
 		t.Fatalf("a file not matching the exact temp pattern was removed: %v", err)
@@ -328,4 +335,46 @@ func TestSafeWrite_RemovesStaleTempFilesOnly(t *testing.T) {
 		t.Fatalf("a symlink matching the pattern must be left alone (err %v)", err)
 	}
 	assertVictimUntouched(t, victim)
+}
+
+// templateIgnores are the env-file patterns in each template's .gitignore
+// (hemfrid/keyto-hub-nextjs-template and hemfrid/keyto-hub-workers-template).
+var templateIgnores = map[string][]string{
+	"nextjs":  {".env*.local", ".env"},
+	"workers": {".dev.vars", ".dev.vars.*", "!.dev.vars.example", ".env", ".env.*"},
+}
+
+// gitIgnored applies gitignore patterns without a slash to a file name, the
+// way git does: the last matching pattern wins and "!" re-includes.
+func gitIgnored(t *testing.T, patterns []string, name string) bool {
+	t.Helper()
+	ignored := false
+	for _, p := range patterns {
+		negate := strings.HasPrefix(p, "!")
+		ok, err := filepath.Match(strings.TrimPrefix(p, "!"), name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if ok {
+			ignored = !negate
+		}
+	}
+	return ignored
+}
+
+// A sync killed between creating its temp file and renaming it leaves a file
+// of secrets behind; the templates' .gitignore must already cover its name so
+// `git add -A` can't pick it up before the next sync removes it.
+func TestSafeWrite_TempFileNamesAreGitIgnoredByTheTemplates(t *testing.T) {
+	for template, bases := range map[string][]string{
+		"nextjs":  {".env"},
+		"workers": {".dev.vars", ".dev.vars.keyto-backup", ".env"},
+	} {
+		for _, base := range bases {
+			name := envsync.TempFileName(base, "0123456789abcdef")
+			if !gitIgnored(t, templateIgnores[template], name) {
+				t.Errorf("%s template: temp file %q is not git-ignored", template, name)
+			}
+		}
+	}
 }
