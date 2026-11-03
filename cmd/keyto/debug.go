@@ -394,7 +394,26 @@ func migrationsLabel(d hub.DebugWorkersD1) string {
 	if len(d.Migrations) == 0 {
 		return "none applied"
 	}
-	return fmt.Sprintf("%d applied, newest %s", len(d.Migrations), d.Migrations[len(d.Migrations)-1])
+	return fmt.Sprintf("%d applied, newest %s", len(d.Migrations), statusText(d.Migrations[len(d.Migrations)-1]))
+}
+
+// The status line is the app's own claim and the Hub doesn't cap it, so one
+// forged line could carry a megabyte-long binding name and thousands of
+// bindings, and writeTable pads every row to the widest cell. Rows are capped
+// per kind like the Hub's Debug tab, and every string from the line is
+// sanitised, kept on one line and cut to maxStatusCell runes before any
+// width is measured.
+const (
+	maxStatusRows = 50
+	maxStatusCell = 256
+)
+
+func statusText(s string) string {
+	s = cleanCell(s)
+	if r := []rune(s); len(r) > maxStatusCell {
+		return string(r[:maxStatusCell-1]) + "…"
+	}
+	return s
 }
 
 // renderD1 prints a Workers project's D1 and KV bindings and last snapshot,
@@ -411,23 +430,27 @@ func renderD1(w io.Writer, c palette, d *hub.DebugD1) {
 		return
 	}
 	s := d.Status
-	fmt.Fprintf(w, "Workers runtime %s (workerd %s):\n", cleanCell(s.Runtime), cleanCell(s.Workerd))
+	fmt.Fprintf(w, "Workers runtime %s (workerd %s):\n", statusText(s.Runtime), statusText(s.Workerd))
 	if len(s.D1) == 0 && len(s.KV) == 0 {
 		fmt.Fprintln(w, "No D1 or KV bindings.")
 	} else {
-		rows := make([][]cell, 0, len(s.D1)+len(s.KV))
-		for _, b := range s.D1 {
-			rows = append(rows, []cell{{b.Binding, nil}, {"D1", nil}, {formatBytes(b.Bytes), nil}, {migrationsLabel(b), nil}})
+		d1, kv := s.D1[:min(len(s.D1), maxStatusRows)], s.KV[:min(len(s.KV), maxStatusRows)]
+		rows := make([][]cell, 0, len(d1)+len(kv))
+		for _, b := range d1 {
+			rows = append(rows, []cell{{statusText(b.Binding), nil}, {"D1", nil}, {formatBytes(b.Bytes), nil}, {statusText(migrationsLabel(b)), nil}})
 		}
-		for _, b := range s.KV {
-			rows = append(rows, []cell{{b.Binding, nil}, {"KV", nil}, {formatCount(b.Keys, "key", "keys"), nil}, {"-", c.dim}})
+		for _, b := range kv {
+			rows = append(rows, []cell{{statusText(b.Binding), nil}, {"KV", nil}, {statusText(formatCount(b.Keys, "key", "keys")), nil}, {"-", c.dim}})
 		}
 		writeTable(w, []string{"BINDING", "KIND", "SIZE", "MIGRATIONS"}, rows)
+		if hiddenD1, hiddenKV := len(s.D1)-len(d1), len(s.KV)-len(kv); hiddenD1+hiddenKV > 0 {
+			fmt.Fprintln(w, c.dim(fmt.Sprintf("… %d more bindings (%d D1, %d KV)", hiddenD1+hiddenKV, hiddenD1, hiddenKV)))
+		}
 	}
 	if snap := s.LastSnapshot; snap == nil {
 		fmt.Fprintln(w, "Last snapshot: "+c.dim("none yet"))
 	} else {
-		fmt.Fprintf(w, "Last snapshot: %s, %s (%s)\n", cleanCell(snap.Reason), cleanCell(snap.TakenAt), cleanCell(snap.Key))
+		fmt.Fprintf(w, "Last snapshot: %s, %s (%s)\n", statusText(snap.Reason), statusText(snap.TakenAt), statusText(snap.Key))
 	}
 }
 

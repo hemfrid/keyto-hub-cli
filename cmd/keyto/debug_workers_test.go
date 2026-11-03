@@ -159,3 +159,79 @@ func TestRenderDebug_WorkersJSONIsPassthrough(t *testing.T) {
 		t.Fatalf("--json changed the answer:\n%s\nwant\n%s", gotJSON, wantJSON)
 	}
 }
+
+// workersStatusJSON builds a database answer with n D1 and n KV bindings,
+// every string (binding names, migration names, snapshot fields, versions)
+// set to long.
+func workersStatusJSON(n int, long string) string {
+	var b strings.Builder
+	q := func(s string) string { j, _ := json.Marshal(s); return string(j) }
+	b.WriteString(`{"kind":"d1","status":{"runtime":` + q(long) + `,"workerd":` + q(long) + `,"d1":[`)
+	for i := 0; i < n; i++ {
+		if i > 0 {
+			b.WriteString(",")
+		}
+		b.WriteString(`{"binding":` + q(long) + `,"bytes":1,"migrations":[` + q(long) + `]}`)
+	}
+	b.WriteString(`],"kv":[`)
+	for i := 0; i < n; i++ {
+		if i > 0 {
+			b.WriteString(",")
+		}
+		b.WriteString(`{"binding":` + q(long) + `,"keys":1}`)
+	}
+	b.WriteString(`],"lastSnapshot":{"key":` + q(long) + `,"takenAt":` + q(long) + `,"reason":` + q(long) + `}}}`)
+	return b.String()
+}
+
+func TestRenderD1_RowsCappedAtFiftyEachWithMoreLine(t *testing.T) {
+	out := render(t, "database", workersStatusJSON(60, "B"), palette{})
+	if n := strings.Count(out, "\nB  "); n != 2*maxStatusRows {
+		t.Fatalf("%d binding rows printed, want %d:\n%s", n, 2*maxStatusRows, out)
+	}
+	if !strings.Contains(out, "\n… 20 more bindings (10 D1, 10 KV)\n") {
+		t.Fatalf("the hidden rows should be counted on a … more line:\n%s", out)
+	}
+	if strings.Contains(render(t, "database", workersStatusJSON(maxStatusRows, "B"), palette{}), "more bindings") {
+		t.Fatal("a … more line was printed with nothing hidden")
+	}
+}
+
+func TestRenderD1_LongCellsTruncated(t *testing.T) {
+	long := strings.Repeat("é", 300) // multi-byte: the cap is in runes
+	out := render(t, "database", workersStatusJSON(1, long), palette{})
+	capped := strings.Repeat("é", maxStatusCell-1) + "…"
+	if strings.Contains(out, strings.Repeat("é", maxStatusCell)) {
+		t.Fatalf("a string longer than %d runes was printed whole", maxStatusCell)
+	}
+	// Binding cells, the migration name, the versions and the three snapshot
+	// fields each come out capped.
+	if n := strings.Count(out, capped); n < 7 {
+		t.Fatalf("%d capped strings, want at least 7:\n%s", n, out)
+	}
+	for _, line := range strings.Split(out, "\n") {
+		if n := len([]rune(line)); n > 6*maxStatusCell {
+			t.Fatalf("a %d-rune line: padding used the uncapped width", n)
+		}
+	}
+}
+
+func TestRenderD1_HugeForgedAnswerHasBoundedOutput(t *testing.T) {
+	huge := strings.Repeat("A", 3<<20) // a 3 MiB binding name
+	raw := workersStatusJSON(20000, "x")
+	raw = strings.Replace(raw, `"binding":"x"`, `"binding":"`+huge+`"`, 1)
+	for _, kind := range []string{"database", "overview"} {
+		in := raw
+		if kind == "overview" {
+			// {"kind":"d1",<status>} → the overview's "d1":{<status>}
+			in = overviewBase + `,"argo":null,"externalSecrets":[],"databases":[],"d1":{` + strings.TrimPrefix(raw, `{"kind":"d1",`) + `}`
+		}
+		out := render(t, kind, in, palette{})
+		if len(out) > 128<<10 {
+			t.Fatalf("%s: %d bytes of output for a forged status line", kind, len(out))
+		}
+		if !strings.Contains(out, "more bindings") {
+			t.Fatalf("%s: the forged answer was not rendered:\n%.500s", kind, out)
+		}
+	}
+}
