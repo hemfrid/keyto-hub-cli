@@ -24,6 +24,11 @@ const (
 	// lack the plugin. `keyto start` runs `docker compose up`, so it needs both.
 	DockerCompose
 	Node
+	// NodeWorkers is Node with a Workers project's floor: wrangler 4 refuses
+	// to run below Node 22.0.0, and the Workers template's engines.node is
+	// >=22. It is the same binary as Node (same name, same install method);
+	// only the version gate and the messages differ.
+	NodeWorkers
 )
 
 func (t Tool) name() string {
@@ -34,10 +39,18 @@ func (t Tool) name() string {
 		return "docker"
 	case DockerCompose:
 		return "docker compose"
-	case Node:
+	case Node, NodeWorkers:
 		return "node"
 	}
 	return "?"
+}
+
+// base maps a variant onto the tool it installs as: NodeWorkers is Node.
+func (t Tool) base() Tool {
+	if t == NodeWorkers {
+		return Node
+	}
+	return t
 }
 
 // nodeMin mirrors the template package.json engines floor (>=20.9). There is no
@@ -49,6 +62,26 @@ const (
 	nodeMinMajor = 20
 	nodeMinMinor = 9
 )
+
+// nodeWorkersMinMajor is wrangler 4's MIN_NODE_VERSION (22.0.0), which the
+// Workers template mirrors in engines.node (>=22).
+const nodeWorkersMinMajor = 22
+
+// nodeFloor returns the minimum Node major.minor a Node tool accepts.
+func nodeFloor(t Tool) (major, minor int) {
+	if t == NodeWorkers {
+		return nodeWorkersMinMajor, 0
+	}
+	return nodeMinMajor, nodeMinMinor
+}
+
+// nodeNeeds is the "who needs which Node" phrase the Node messages share.
+func nodeNeeds(t Tool) string {
+	if t == NodeWorkers {
+		return fmt.Sprintf("a Workers project needs Node >=%d (wrangler 4 refuses older)", nodeWorkersMinMajor)
+	}
+	return fmt.Sprintf("keyto needs Node >=%d.%d", nodeMinMajor, nodeMinMinor)
+}
 
 // Deps are the injected seams. main.go wires real implementations.
 type Deps struct {
@@ -86,14 +119,14 @@ func Ensure(ctx context.Context, want []Tool, o Opts) error {
 
 func ensureOne(ctx context.Context, t Tool, o Opts) error {
 	switch t {
-	case Node:
+	case Node, NodeWorkers:
 		if o.HasCommand("node") {
 			v, _ := o.Version("node")
-			if nodeVersionOK(v) {
+			if nodeVersionOK(t, v) {
 				return nil
 			}
-			return fmt.Errorf("node %s is out of range — keyto needs Node >=%d.%d. Fix with `nvm install 24 && nvm use 24` (or `brew install node@24`), then re-run",
-				v, nodeMinMajor, nodeMinMinor)
+			return fmt.Errorf("node %s is out of range — %s. Fix with `nvm install 24 && nvm use 24` (or `brew install node@24`), then re-run",
+				v, nodeNeeds(t))
 		}
 	case Docker:
 		if o.HasCommand("docker") {
@@ -160,17 +193,18 @@ func (o Opts) InotifyWarning(readFile func(path string) ([]byte, error)) string 
 // nodeVersionRe extracts major.minor from `node --version` output (e.g. "v20.20.2").
 var nodeVersionRe = regexp.MustCompile(`v?(\d+)\.(\d+)`)
 
-func nodeVersionOK(v string) bool {
+func nodeVersionOK(t Tool, v string) bool {
 	m := nodeVersionRe.FindStringSubmatch(v)
 	if m == nil {
 		return false
 	}
 	maj, _ := strconv.Atoi(m[1])
 	min, _ := strconv.Atoi(m[2])
-	if maj < nodeMinMajor {
+	floorMaj, floorMin := nodeFloor(t)
+	if maj < floorMaj {
 		return false
 	}
-	if maj == nodeMinMajor && min < nodeMinMinor {
+	if maj == floorMaj && min < floorMin {
 		return false
 	}
 	return true
@@ -227,8 +261,8 @@ func Diagnose(ctx context.Context, want []Tool, o Opts) []CheckResult {
 		switch t {
 		case Git:
 			out = append(out, o.diagnoseSimple(Git, "git"))
-		case Node:
-			out = append(out, o.diagnoseNode())
+		case Node, NodeWorkers:
+			out = append(out, o.diagnoseNode(t))
 		case Docker:
 			out = append(out, o.diagnoseDockerEngine(), o.diagnoseDockerDaemon(ctx))
 		case DockerCompose:
@@ -255,28 +289,30 @@ func (o Opts) diagnoseSimple(t Tool, name string) CheckResult {
 	}
 }
 
-func (o Opts) diagnoseNode() CheckResult {
+// diagnoseNode classifies Node against t's floor (Node or NodeWorkers). Both
+// report as "node": the Hub's diagnostics contract has one node check.
+func (o Opts) diagnoseNode(t Tool) CheckResult {
 	if !o.HasCommand("node") {
-		desc, _, auto := o.installMethod(Node)
+		desc, _, auto := o.installMethod(t)
 		return CheckResult{
 			Name:    "node",
 			Status:  StatusMissing,
 			FixType: fixTypeFor(auto),
 			Fix:     desc,
-			Detail:  fmt.Sprintf("not installed — keyto needs Node >=%d.%d", nodeMinMajor, nodeMinMinor),
+			Detail:  "not installed — " + nodeNeeds(t),
 		}
 	}
 	v, _ := o.Version("node")
-	if nodeVersionOK(v) {
+	if nodeVersionOK(t, v) {
 		return CheckResult{Name: "node", Status: StatusOK, FixType: FixNone, Detail: firstLine(v)}
 	}
-	desc, _, auto := o.installMethod(Node)
+	desc, _, auto := o.installMethod(t)
 	return CheckResult{
 		Name:    "node",
 		Status:  StatusWrongVersion,
 		FixType: fixTypeFor(auto),
 		Fix:     desc,
-		Detail:  fmt.Sprintf("%s is out of range — keyto needs Node >=%d.%d", firstLine(v), nodeMinMajor, nodeMinMinor),
+		Detail:  fmt.Sprintf("%s is out of range — %s", firstLine(v), nodeNeeds(t)),
 	}
 }
 
@@ -425,6 +461,8 @@ func (o Opts) InotifyCheck(readFile func(path string) ([]byte, error)) CheckResu
 // installMethod returns (description, command+args) for (os, pkgManager, tool),
 // and whether auto-install is supported on this platform.
 func (o Opts) installMethod(t Tool) (desc string, cmd []string, auto bool) {
+	// Every Node install lands Node 24, which clears both floors.
+	t = t.base()
 	switch o.OS {
 	case "darwin":
 		switch t {
@@ -484,7 +522,7 @@ func (o Opts) sudo() []string {
 }
 
 func (o Opts) windowsHint(t Tool) string {
-	switch t {
+	switch t.base() {
 	case Git:
 		return "winget install Git.Git"
 	case Docker:

@@ -224,9 +224,10 @@ func TestRun_Workers_PrereqsAreGitAndNodeOnly(t *testing.T) {
 	if err := Run(context.Background(), d, Flags{}); err != nil {
 		t.Fatalf("unexpected: %v", err)
 	}
-	want := []prereq.Tool{prereq.Git, prereq.Node}
+	// NodeWorkers, not Node: wrangler 4 needs Node >=22, above the Next.js 20.9.
+	want := []prereq.Tool{prereq.Git, prereq.NodeWorkers}
 	if !equalTools(got, want) {
-		t.Fatalf("prereqs = %v, want %v (no Docker, no Compose)", got, want)
+		t.Fatalf("prereqs = %v, want %v (no Docker, no Compose, the Node 22 floor)", got, want)
 	}
 }
 
@@ -353,4 +354,61 @@ func equalTools(a, b []prereq.Tool) bool {
 		}
 	}
 	return true
+}
+
+// ---- the @hemfrid package lane in ~/.npmrc (Workers only) ----
+
+func TestRun_Workers_NpmLaneBeforeInstall(t *testing.T) {
+	var rec []string
+	d := workersDeps(&rec)
+	d.NodeModulesPresent = func() bool { return false }
+	d.NpmLane = func(ctx context.Context) error { rec = append(rec, "npmlane"); return nil }
+	if err := Run(context.Background(), d, Flags{}); err != nil {
+		t.Fatalf("unexpected: %v", err)
+	}
+	want := []string{"prereq", "envsync", "npmlane", "install", "run:migrate", "run:dev"}
+	if strings.Join(rec, ",") != strings.Join(want, ",") {
+		t.Fatalf("step order = %v, want %v", rec, want)
+	}
+}
+
+func TestRun_Workers_NpmLaneRunsWithNoSyncAndNoInstall(t *testing.T) {
+	var rec []string
+	d := workersDeps(&rec)
+	d.NpmLane = func(ctx context.Context) error { rec = append(rec, "npmlane"); return nil }
+	if err := Run(context.Background(), d, Flags{NoSync: true, NoInstall: true}); err != nil {
+		t.Fatalf("unexpected: %v", err)
+	}
+	if !strings.Contains(strings.Join(rec, ","), "npmlane") {
+		t.Fatalf("the lane is set up even with --no-sync --no-install (a later npm ci needs it), steps: %v", rec)
+	}
+}
+
+func TestRun_Workers_NpmLaneFailureIsATipNotAnError(t *testing.T) {
+	var rec []string
+	d := workersDeps(&rec)
+	out := &bytes.Buffer{}
+	d.Out = out
+	d.NpmLane = func(ctx context.Context) error { return errors.New("no keyto credential — run `keyto auth`") }
+	if err := Run(context.Background(), d, Flags{}); err != nil {
+		t.Fatalf("a lane failure must not stop keyto start, got %v", err)
+	}
+	if !strings.Contains(out.String(), "tip: no keyto credential") {
+		t.Fatalf("the failure should be printed as a tip, got:\n%s", out.String())
+	}
+	if !strings.Contains(strings.Join(rec, ","), "run:dev") {
+		t.Fatalf("boot should carry on to the dev server, steps: %v", rec)
+	}
+}
+
+func TestRun_NextJS_NeverTouchesNpmLane(t *testing.T) {
+	var rec []string
+	d := baseDeps(&rec)
+	d.NpmLane = func(ctx context.Context) error {
+		t.Fatal("a Next.js checkout must not touch ~/.npmrc")
+		return nil
+	}
+	if err := Run(context.Background(), d, Flags{}); err != nil {
+		t.Fatalf("unexpected: %v", err)
+	}
 }

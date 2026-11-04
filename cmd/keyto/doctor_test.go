@@ -367,8 +367,8 @@ func TestDoctorToolsFor(t *testing.T) {
 	if got, want := doctorToolsFor(stack.NextJS), []prereq.Tool{prereq.Git, prereq.Docker, prereq.DockerCompose, prereq.Node}; !sameTools(got, want) {
 		t.Errorf("Next.js tools = %v, want %v", got, want)
 	}
-	if got, want := doctorToolsFor(stack.Workers), []prereq.Tool{prereq.Git, prereq.Node}; !sameTools(got, want) {
-		t.Errorf("Workers tools = %v, want %v (no Docker checks)", got, want)
+	if got, want := doctorToolsFor(stack.Workers), []prereq.Tool{prereq.Git, prereq.NodeWorkers}; !sameTools(got, want) {
+		t.Errorf("Workers tools = %v, want %v (no Docker checks, the Node 22 floor)", got, want)
 	}
 }
 
@@ -383,8 +383,8 @@ func TestRunDoctor_Workers_DiagnosesWithoutDocker(t *testing.T) {
 	if err := runDoctor(context.Background(), []string{"--no-report"}); err != nil {
 		t.Fatalf("runDoctor: %v", err)
 	}
-	if !sameTools(got, []prereq.Tool{prereq.Git, prereq.Node}) {
-		t.Fatalf("diagnosed tools = %v, want git + node only", got)
+	if !sameTools(got, []prereq.Tool{prereq.Git, prereq.NodeWorkers}) {
+		t.Fatalf("diagnosed tools = %v, want git + node (Workers floor) only", got)
 	}
 }
 

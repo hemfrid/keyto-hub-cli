@@ -220,8 +220,8 @@ func runCheckoutImpl(ctx context.Context, args []string) error {
 		return err
 	}
 	emitProjectDir(projectDir)
-	// Non-blocking heads-up: `keyto start` will also need Node 20+ (and Docker,
-	// except on a Workers repo). Detect-only here — never install or block.
+	// Non-blocking heads-up: `keyto start` will also need Node 20+ and Docker,
+	// or Node 22+ alone on a Workers repo. Detect-only: never install or block.
 	if tip := startPrereqTip(realPrereqDeps(ctx), stack.Detect(projectDir)); tip != "" {
 		fmt.Fprintln(os.Stderr, tip)
 	}
@@ -297,21 +297,32 @@ func gitToplevel(ctx context.Context, dir string) (string, error) {
 	return strings.TrimSpace(string(out)), nil
 }
 
+// Node majors the checkout heads-up asks for. Workers is wrangler 4's floor.
+const (
+	tipNodeMajor        = 20
+	tipNodeWorkersMajor = 22
+)
+
 // startPrereqTip detects (without installing or blocking) whether the tools
-// `keyto start` needs for the stack — Docker and a supported Node, or Node
-// alone for a Workers repo — are present and returns a one-line heads-up.
+// `keyto start` needs for the stack — Docker and Node 20+, or Node 22+ alone
+// for a Workers repo — are present and returns a one-line heads-up.
 // Returns "" when all are already satisfied. Detect-only: it must never mutate
 // the machine or fail the checkout. Takes prereq.Deps so it's unit-testable.
 func startPrereqTip(deps prereq.Deps, kind stack.Kind) string {
-	needs := "Docker + Node 20+"
+	nodeMajor := tipNodeMajor
+	if kind == stack.Workers {
+		nodeMajor = tipNodeWorkersMajor
+	}
+	node := fmt.Sprintf("Node %d+", nodeMajor)
+	needs := "Docker + " + node
 	var missing []string
 	if kind == stack.Workers {
-		needs = "Node 20+"
+		needs = node
 	} else if !deps.HasCommand("docker") {
 		missing = append(missing, "Docker")
 	}
-	if v, err := deps.Version("node"); err != nil || !deps.HasCommand("node") || !nodeVersionTipOK(v) {
-		missing = append(missing, "Node 20+")
+	if v, err := deps.Version("node"); err != nil || !deps.HasCommand("node") || !nodeMajorAtLeast(v, nodeMajor) {
+		missing = append(missing, node)
 	}
 	if len(missing) == 0 {
 		return ""
@@ -319,13 +330,18 @@ func startPrereqTip(deps prereq.Deps, kind stack.Kind) string {
 	return fmt.Sprintf("tip: `keyto start` will also need %s — missing: %s (run `keyto start` to install)", needs, strings.Join(missing, ", "))
 }
 
-// nodeVersionTipOK is the detect-only Node check used by the checkout heads-up.
-// It accepts any Node >=20 major and is deliberately lenient (a heads-up, not a
-// gate): `keyto start`'s prereq.Ensure does the authoritative >=20.9 check.
-func nodeVersionTipOK(v string) bool {
+// nodeVersionTipOK is the detect-only Next.js Node check used by the checkout
+// heads-up. It accepts any Node >=20 major and is deliberately lenient (a
+// heads-up, not a gate): `keyto start`'s prereq.Ensure does the authoritative
+// >=20.9 check.
+func nodeVersionTipOK(v string) bool { return nodeMajorAtLeast(v, tipNodeMajor) }
+
+// nodeMajorAtLeast reports whether `node --version` output v has a major of at
+// least min.
+func nodeMajorAtLeast(v string, min int) bool {
 	major, _, _ := strings.Cut(strings.TrimPrefix(strings.TrimSpace(v), "v"), ".")
 	n, err := strconv.Atoi(major)
-	return err == nil && n >= 20
+	return err == nil && n >= min
 }
 
 // readMarker reads the keyto project marker from dir. It is a package var so
@@ -443,7 +459,9 @@ func bootDeps(ctx context.Context, cwd string, flags boot.Flags, creds *config.C
 			}
 			return nil
 		},
-		EnvSync:       func(ctx context.Context) error { return runEnvSyncWithCreds(ctx, nil, creds) },
+		EnvSync: func(ctx context.Context) error { return runEnvSyncWithCreds(ctx, nil, creds) },
+		// Workers only (boot.Run gates it): ~/.npmrc gets the @hemfrid lane.
+		NpmLane:       func(ctx context.Context) error { return ensureNpmLane(ctx, creds, os.Stderr) },
 		EnvFileExists: func(name string) bool { return fileExists(filepath.Join(cwd, name)) },
 		HasCompose: func() bool {
 			return fileExists(filepath.Join(cwd, "docker-compose.yml")) ||
