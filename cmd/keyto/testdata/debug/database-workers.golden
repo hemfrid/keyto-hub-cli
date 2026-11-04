@@ -1,0 +1,7 @@
+Workers runtime v1.2.0 (workerd 1.20261010.0):
+BINDING  KIND  SIZE     MIGRATIONS
+DB       D1    1.5 MiB  3 applied, newest 0003_sessions.sql
+AUDIT    D1    4 KiB    none applied
+CACHE    KV    12 keys  -
+FLAGS    KV    1 key    -
+Last snapshot: scheduled, 2026-11-03T09:00:00Z (snapshots/2026-11-03T09-00-00Z.tar.zst)

@@ -68,6 +68,33 @@ The everyday loop is **`keyto checkout <project>` → `keyto start`**:
 > projects' stacks run side by side. On the rare port clash, override e.g.
 > `POSTGRES_PORT` in `.env.local`.
 
+> **Workers projects run without Docker.** A repo with a `wrangler.json` (or
+> `wrangler.jsonc`) at its root is a Workers project (from
+> `hemfrid/keyto-hub-workers-template`), and `keyto start` runs a shorter loop
+> for it: the preflight checks **git and Node ≥20 only** (no Docker, no
+> Compose), `keyto env sync` writes **`.dev.vars`** instead of `.env`, there
+> are no backing services to start (D1 and KV run inside wrangler), `npm run
+> migrate` applies the D1 migrations locally whenever the script exists, and
+> `npm run dev` starts `wrangler dev`.
+>
+> For a Workers repo, `keyto env sync` takes the key list from the committed
+> **`.environments`** file (every entry except `platform-auto` and `skip`),
+> fetches the values from the Hub (UAT by default), drops every `KEYTO_*` key
+> (the platform sets those), and ends the managed part with
+> `KEYTO_DEV_USER=1`, which signs you in as the local dev user. The dev user
+> is refused when any other `KEYTO_*` key is present, so keep them out of the
+> file. For your own local values, end `.dev.vars` with the line
+> `# local overrides below` and put them under it: every sync keeps that
+> section as it is (a `KEYTO_*` line there is removed, with a note). Values
+> are quoted the way wrangler's dotenv reads `.dev.vars`, so a JSON key, a
+> Windows path or a tab reach the app unchanged; a value no quoting can carry
+> exactly (one that needs `'`, `` ` `` and `"` at once, for example) is left
+> out, with a note naming the key. A `.dev.vars` that env sync didn't write is
+> saved to `.dev.vars.keyto-backup` (then `-2`, `-3`, …) before it is
+> replaced. `keyto env sync` refuses a
+> `.env` or `.dev.vars` that is a symlink or not a regular file, so a cloned
+> repo can't redirect your secrets elsewhere.
+
 Then edit locally (with Claude Code, your editor, whatever) and `git push` — it
 flows through the Keyto Hub to GitHub.
 
@@ -123,6 +150,12 @@ to be walked through the fixes (plus a fixability tally). Flags:
 - `--report` / `--no-report` — upload the report to the Hub, where admins see it
   at `/admin/diagnostics`. Default-on when you're signed in; always best-effort,
   so a failed upload never changes the result.
+
+Inside a Workers checkout (a `wrangler.json`/`wrangler.jsonc` at the root),
+doctor reports `stack: workers` (also as `"stack": "workers"` in `--json`) and
+skips the Docker checks, because a Workers project doesn't use Docker. It doesn't
+upload that report to the Hub, which can't record a stack yet; run doctor
+outside the repo to send one.
 
 `keyto start` runs the same checks as part of its preflight, so `keyto doctor` is
 mainly for diagnosing a machine before (or instead of) booting a project.
@@ -204,6 +237,10 @@ go build -o keyto ./cmd/keyto
   run) → `docker compose up -d --wait` → `npm install` (if needed) →
   `npm run migrate` (when a DB is up) → `npm run dev`, then opens the app URL in
   the browser (`--no-open` to skip; skipped automatically on CI/non-interactive).
+  A Workers repo (`wrangler.json`) skips Docker entirely: git/Node checks →
+  `keyto env sync` (writes `.dev.vars` from `.environments`, with
+  `KEYTO_DEV_USER=1`) → `npm install` (if needed) → `npm run migrate` (local D1)
+  → `npm run dev` (`wrangler dev`).
 - `git push` → the credential helper supplies the credential → the Hub authorizes
   you live against project membership → relays to GitHub as the App. Revoking your
   access at the Hub cuts pushes immediately.

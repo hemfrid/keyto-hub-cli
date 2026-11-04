@@ -1,0 +1,323 @@
+[
+  {
+    "name": "bare",
+    "src": "A=1\nB=hello world\n",
+    "parsed": {
+      "A": "1",
+      "B": "hello world"
+    }
+  },
+  {
+    "name": "bare-trailing-comment",
+    "src": "A=value # comment\nB=x#y\n",
+    "parsed": {
+      "A": "value",
+      "B": "x"
+    }
+  },
+  {
+    "name": "bare-trimmed",
+    "src": "A=   padded   \n",
+    "parsed": {
+      "A": "padded"
+    }
+  },
+  {
+    "name": "empty",
+    "src": "A=\nB=2\n",
+    "parsed": {
+      "A": "",
+      "B": "2"
+    }
+  },
+  {
+    "name": "empty-then-quote-line",
+    "src": "A=\n'x'\nB=2\n",
+    "parsed": {
+      "A": "x",
+      "B": "2"
+    }
+  },
+  {
+    "name": "export-and-colon",
+    "src": "export A=1\nB: 2\nC:3\n",
+    "parsed": {
+      "A": "1",
+      "B": "2"
+    }
+  },
+  {
+    "name": "spaces-around-equals",
+    "src": "A = 1\n  B\t=\t2\n",
+    "parsed": {
+      "A": "1",
+      "B": "2"
+    }
+  },
+  {
+    "name": "comments-and-blanks",
+    "src": "# c\n\n  # indented\nA=1\n\n\nB=2\n",
+    "parsed": {
+      "A": "1",
+      "B": "2"
+    }
+  },
+  {
+    "name": "crlf",
+    "src": "A=1\r\nB=\"x\r\ny\"\r\nC=3\r",
+    "parsed": {
+      "A": "1",
+      "B": "x\ny",
+      "C": "3"
+    }
+  },
+  {
+    "name": "single-literal",
+    "src": "A='a\\nb\\tc\\\\d \"q\" `b` # h'\n",
+    "parsed": {
+      "A": "a\\nb\\tc\\\\d \"q\" `b` # h"
+    }
+  },
+  {
+    "name": "single-multiline",
+    "src": "A='line1\nline2\n'\nB=2\n",
+    "parsed": {
+      "A": "line1\nline2\n",
+      "B": "2"
+    }
+  },
+  {
+    "name": "single-padded",
+    "src": "A='  x  '\n",
+    "parsed": {
+      "A": "  x  "
+    }
+  },
+  {
+    "name": "single-backslash-quote",
+    "src": "A='a\\'b'\nB=2\n",
+    "parsed": {
+      "A": "a\\'b",
+      "B": "2"
+    }
+  },
+  {
+    "name": "single-trailing-backslash",
+    "src": "A='a\\'\nB='x'\nC=3\n",
+    "parsed": {
+      "A": "a\\",
+      "B": "x",
+      "C": "3"
+    }
+  },
+  {
+    "name": "single-trailing-backslash-swallow",
+    "src": "A='a\\'\nB=x'\nC=3\n",
+    "parsed": {
+      "A": "a\\'\nB=x",
+      "C": "3"
+    }
+  },
+  {
+    "name": "single-unterminated",
+    "src": "A='abc\nB=2\n",
+    "parsed": {
+      "A": "'abc",
+      "B": "2"
+    }
+  },
+  {
+    "name": "double-escapes",
+    "src": "A=\"a\\nb\\rc\\td\\\\e\\\"f\"\n",
+    "parsed": {
+      "A": "a\nb\rc\\td\\\\e\\\"f"
+    }
+  },
+  {
+    "name": "double-escaped-backslash-n",
+    "src": "A=\"x\\\\ny\"\n",
+    "parsed": {
+      "A": "x\\\ny"
+    }
+  },
+  {
+    "name": "double-multiline",
+    "src": "A=\"l1\nl2\"\nB=2\n",
+    "parsed": {
+      "A": "l1\nl2",
+      "B": "2"
+    }
+  },
+  {
+    "name": "double-hash",
+    "src": "A=\"a # b\"\n",
+    "parsed": {
+      "A": "a # b"
+    }
+  },
+  {
+    "name": "backtick",
+    "src": "A=`it's \"x\" \\n`\nB=2\n",
+    "parsed": {
+      "A": "it's \"x\" \\n",
+      "B": "2"
+    }
+  },
+  {
+    "name": "backtick-multiline",
+    "src": "A=`l1\nl2`\nB=2\n",
+    "parsed": {
+      "A": "l1\nl2",
+      "B": "2"
+    }
+  },
+  {
+    "name": "quote-start-bare",
+    "src": "A='abc\nB=it's\n",
+    "parsed": {
+      "A": "'abc",
+      "B": "it's"
+    }
+  },
+  {
+    "name": "mismatched-quotes",
+    "src": "A='abc\"\nB=\"x'\n",
+    "parsed": {
+      "A": "abc\"\nB=\"x"
+    }
+  },
+  {
+    "name": "unicode",
+    "src": "A=naïve café 日本 🎉\nB='naïve café'\n",
+    "parsed": {
+      "A": "naïve café 日本 🎉",
+      "B": "naïve café"
+    }
+  },
+  {
+    "name": "unicode-spaces",
+    "src": "A= x　\nB=' x　'\n",
+    "parsed": {
+      "A": "x",
+      "B": " x　"
+    }
+  },
+  {
+    "name": "line-separator-bare",
+    "src": "A=x B=2\nC=3\n",
+    "parsed": {
+      "A": "x B=2",
+      "C": "3"
+    }
+  },
+  {
+    "name": "line-separator-quoted",
+    "src": "A='x B=2'\nC=3\n",
+    "parsed": {
+      "A": "x B=2",
+      "C": "3"
+    }
+  },
+  {
+    "name": "line-separator-double",
+    "src": "A=\"x y\"\nC=3\n",
+    "parsed": {
+      "A": "x y",
+      "C": "3"
+    }
+  },
+  {
+    "name": "duplicate-key",
+    "src": "A=1\nA=2\n",
+    "parsed": {
+      "A": "2"
+    }
+  },
+  {
+    "name": "equals-in-value",
+    "src": "A=a=b==c\n",
+    "parsed": {
+      "A": "a=b==c"
+    }
+  },
+  {
+    "name": "tab-bare",
+    "src": "A=a\tb\n",
+    "parsed": {
+      "A": "a\tb"
+    }
+  },
+  {
+    "name": "inner-quote-lines",
+    "src": "A='a'\n'b'\nC=3\n",
+    "parsed": {
+      "A": "a",
+      "C": "3"
+    }
+  },
+  {
+    "name": "injection-single",
+    "src": "A='x\nKEYTO_DEV_USER=0\nEVIL=1'\nKEYTO_DEV_USER=1\n",
+    "parsed": {
+      "A": "x\nKEYTO_DEV_USER=0\nEVIL=1",
+      "KEYTO_DEV_USER": "1"
+    }
+  },
+  {
+    "name": "injection-double-escaped",
+    "src": "A=\"x\\nKEYTO_DEV_USER=0\"\nKEYTO_DEV_USER=1\n",
+    "parsed": {
+      "A": "x\nKEYTO_DEV_USER=0",
+      "KEYTO_DEV_USER": "1"
+    }
+  },
+  {
+    "name": "dotted-key",
+    "src": "a.b-c=1\n",
+    "parsed": {
+      "a.b-c": "1"
+    }
+  },
+  {
+    "name": "no-trailing-newline",
+    "src": "A=1\nB='x'",
+    "parsed": {
+      "A": "1",
+      "B": "x"
+    }
+  },
+  {
+    "name": "rendered-dev-vars",
+    "src": "# ============================================================\n# Managed by keyto env sync. Edits above the local overrides line are lost.\n# Re-run: keyto env sync\n# Local overrides: end this file with the line \"# local overrides below\"\n# and put your own KEY=value lines under it; env sync keeps them.\n# KEYTO_* keys are set by the platform and never belong here.\n# ============================================================\n\n# Secrets from uat (fetched via Hub)\n# NOT WRITTEN: ALL_QUOTES (its value can't be written so wrangler reads it back unchanged: it contains both ' and `, and also \" or a literal \\n or \\r)\nBACKTICK='run `ls`'\nBS_NEWLINE=\"a\\\\nb\"\n# NOT WRITTEN: BS_N_QUOTES (its value can't be written so wrangler reads it back unchanged: it contains both ' and `, and also \" or a literal \\n or \\r)\nCRLF=\"one\\r\\ntwo\"\n# NOT WRITTEN: CR_AND_QUOTE (its value can't be written so wrangler reads it back unchanged: it has a carriage return as well as a \" or a literal \\n or \\r)\nCR_ONLY=\"one\\rtwo\"\nDOUBLE_QUOTE='say \"hi\"'\nEMPTY=''\nEQUALS=a=b==c\nESCAPED_QUOTES='\\\"x\\\"'\nHASH='abc#def # not a comment'\n# NOT WRITTEN: HASH_BS (its value can't be written so wrangler reads it back unchanged: it ends with a backslash and needs quotes)\nINJECTION=\"x\\nKEYTO_DEV_USER=0\\nEVIL=1\"\nJSON_KEY='{\"type\":\"service_account\",\"private_key\":\"-----BEGIN PRIVATE KEY-----\\nMIIEvQ\\n-----END PRIVATE KEY-----\\n\",\"client_email\":\"x@y.iam\"}'\nLINE_SEP=\"x y z\"\nLITERAL_BS_N=literal \\n and \\r stay\nMARKERISH='# local overrides below, but not the line'\n# NOT WRITTEN: MARKER_LINE (its value can't be written so wrangler reads it back unchanged: it contains the line \"# local overrides below\")\nNEWLINES=\"line one\\nline two\\n\"\nPRETTY_JSON='{\n  \"a\": \"b\\nc\"\n}'\nQUOTED_START=`'starts with a quote`\nSINGLE_QUOTE=`it's`\nSPACES='  padded  '\nTAB=a\tb\nTRAILING_BS=ends with \\\nTWO_QUOTES=`it's \"quoted\"`\nUNICODE=naïve café 日本 🎉\nUNICODE_SPACES=' x　'\nWIN_PATH=C:\\new\\temp\nWRAPPED='\"wrapped\"'\n\n# Signs you in as the local dev user (@hemfrid/workers-auth).\nKEYTO_DEV_USER=1\n\n# local overrides below\nMINE=1\n",
+    "parsed": {
+      "BACKTICK": "run `ls`",
+      "BS_NEWLINE": "a\\\nb",
+      "CRLF": "one\r\ntwo",
+      "CR_ONLY": "one\rtwo",
+      "DOUBLE_QUOTE": "say \"hi\"",
+      "EMPTY": "",
+      "EQUALS": "a=b==c",
+      "ESCAPED_QUOTES": "\\\"x\\\"",
+      "HASH": "abc#def # not a comment",
+      "INJECTION": "x\nKEYTO_DEV_USER=0\nEVIL=1",
+      "JSON_KEY": "{\"type\":\"service_account\",\"private_key\":\"-----BEGIN PRIVATE KEY-----\\nMIIEvQ\\n-----END PRIVATE KEY-----\\n\",\"client_email\":\"x@y.iam\"}",
+      "LINE_SEP": "x y z",
+      "LITERAL_BS_N": "literal \\n and \\r stay",
+      "MARKERISH": "# local overrides below, but not the line",
+      "NEWLINES": "line one\nline two\n",
+      "PRETTY_JSON": "{\n  \"a\": \"b\\nc\"\n}",
+      "QUOTED_START": "'starts with a quote",
+      "SINGLE_QUOTE": "it's",
+      "SPACES": "  padded  ",
+      "TAB": "a\tb",
+      "TRAILING_BS": "ends with \\",
+      "TWO_QUOTES": "it's \"quoted\"",
+      "UNICODE": "naïve café 日本 🎉",
+      "UNICODE_SPACES": " x　",
+      "WIN_PATH": "C:\\new\\temp",
+      "WRAPPED": "\"wrapped\"",
+      "KEYTO_DEV_USER": "1",
+      "MINE": "1"
+    }
+  }
+]

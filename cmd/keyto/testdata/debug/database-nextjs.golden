@@ -1,0 +1,2 @@
+acme-pg: Cluster in healthy state (2/2 ready, primary acme-pg-1, last failover 2026-11-01T08:00:00Z)
+acme-pg-replica: unknown (0/? ready, primary ?, last failover -)

@@ -12,19 +12,31 @@ import (
 	"runtime"
 	"strings"
 
+	"github.com/hemfrid/keyto-hub-cli/internal/boot"
 	"github.com/hemfrid/keyto-hub-cli/internal/config"
 	"github.com/hemfrid/keyto-hub-cli/internal/hub"
 	"github.com/hemfrid/keyto-hub-cli/internal/prereq"
+	"github.com/hemfrid/keyto-hub-cli/internal/stack"
 )
 
 // diagnosticsSchemaVersion is the envelope version the Hub's
 // /api/cli/diagnostics ingest expects around a doctor report.
 const diagnosticsSchemaVersion = 1
 
-// doctorTools is the prerequisite set `keyto doctor` diagnoses — the same set
-// `keyto start` ensures. Docker expands to two checks (engine + daemon) inside
-// prereq.Diagnose.
-var doctorTools = []prereq.Tool{prereq.Git, prereq.Docker, prereq.DockerCompose, prereq.Node}
+// doctorToolsFor is the prerequisite set `keyto doctor` diagnoses — the same
+// set `keyto start` ensures for the stack. Docker expands to two checks (engine
+// + daemon) inside prereq.Diagnose; a Workers repo has no Docker checks.
+func doctorToolsFor(k stack.Kind) []prereq.Tool { return boot.Prereqs(k) }
+
+// doctorStack is a seam over the current directory's stack detection so
+// runDoctor's Workers branch is testable without a real checkout.
+var doctorStack = func() stack.Kind {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return stack.NextJS
+	}
+	return stack.Detect(cwd)
+}
 
 // doctorReport is the machine form emitted by `keyto doctor --json`. Its shape
 // is the producer half of the Hub /api/cli/diagnostics ingest contract (the
@@ -36,6 +48,10 @@ type doctorReport struct {
 	Arch       string               `json:"arch"`
 	CLIVersion string               `json:"cli_version"`
 	Checks     []prereq.CheckResult `json:"checks"`
+
+	// Stack is "workers" in a Workers checkout and omitted otherwise, so the
+	// Next.js report is unchanged.
+	Stack string `json:"stack,omitempty"`
 }
 
 // diagnosticsPayload is the body POSTed to the Hub's /api/cli/diagnostics
@@ -101,30 +117,32 @@ func runDoctor(ctx context.Context, args []string) error {
 	}
 
 	deps := realPrereqDeps(ctx)
-	checks := diagnose(ctx, deps)
+	kind := doctorStack()
+	tools := doctorToolsFor(kind)
+	checks := diagnose(ctx, deps, tools)
 
 	if *fix {
 		// Attempt to install the auto/command-fixable tools (consent-gated via
 		// prereq.Ensure). manual items are never auto-run — re-diagnose after so
 		// the summary reflects the post-fix state.
-		if err := prereq.Ensure(ctx, doctorTools, prereq.Opts{Deps: deps, AutoYes: *yes}); err != nil {
+		if err := prereq.Ensure(ctx, tools, prereq.Opts{Deps: deps, AutoYes: *yes}); err != nil {
 			fmt.Fprintln(os.Stderr, "keyto doctor --fix:", err)
 		}
-		checks = diagnose(ctx, deps)
+		checks = diagnose(ctx, deps, tools)
 	}
 
 	if *asJSON {
-		if err := emitDoctorJSON(ctx, os.Stdout, checks); err != nil {
+		if err := emitDoctorJSON(ctx, os.Stdout, kind, checks); err != nil {
 			return err
 		}
 	} else {
-		printDoctorHuman(os.Stdout, checks)
+		printDoctorHuman(os.Stdout, kind, checks)
 	}
 
 	// Upload the report to the Hub so it lands in /admin/diagnostics. Default-on
 	// when authenticated; --no-report opts out. Always best-effort: a failed
 	// upload never changes the exit code (that reflects the local diagnosis).
-	maybeReportDoctor(ctx, checks, *report && !*noReport)
+	maybeReportDoctor(ctx, kind, checks, *report && !*noReport)
 
 	if anyBlocking(checks) {
 		return fmt.Errorf("doctor found blocking prerequisite issues — see above")
@@ -137,8 +155,17 @@ func runDoctor(ctx context.Context, args []string) error {
 // flag, missing/expired credential, or upload error each leaves the local
 // diagnosis untouched — at most it prints a one-line note to stderr. The local
 // report has already been written to stdout by the caller.
-func maybeReportDoctor(ctx context.Context, checks []prereq.CheckResult, enabled bool) {
+//
+// A Workers checkout is not uploaded: the Hub's /api/cli/diagnostics schema
+// is .strict() and has no stack field (keyto-hub lib/cli-diagnostics.ts), so
+// the report would land in /admin/diagnostics as a Docker-less machine with
+// the Docker checks silently missing.
+func maybeReportDoctor(ctx context.Context, kind stack.Kind, checks []prereq.CheckResult, enabled bool) {
 	if !enabled {
+		return
+	}
+	if kind == stack.Workers {
+		fmt.Fprintln(os.Stderr, "note: setup report not sent to the Hub — it can't record a Workers checkout yet (Docker checks are skipped here); run `keyto doctor` outside the repo to send one")
 		return
 	}
 	creds, err := config.Load()
@@ -163,11 +190,11 @@ func maybeReportDoctor(ctx context.Context, checks []prereq.CheckResult, enabled
 	fmt.Fprintln(os.Stderr, "• sent your setup report to the Hub")
 }
 
-// diagnoseAll runs the prereq diagnosis plus the Linux inotify advisory, in the
-// order they should be reported.
-func diagnoseAll(ctx context.Context, deps prereq.Deps) []prereq.CheckResult {
+// diagnoseAll runs the prereq diagnosis for tools plus the Linux inotify
+// advisory, in the order they should be reported.
+func diagnoseAll(ctx context.Context, deps prereq.Deps, tools []prereq.Tool) []prereq.CheckResult {
 	o := prereq.Opts{Deps: deps}
-	checks := prereq.Diagnose(ctx, doctorTools, o)
+	checks := prereq.Diagnose(ctx, tools, o)
 	checks = append(checks, o.InotifyCheck(os.ReadFile))
 	return checks
 }
@@ -185,9 +212,10 @@ func anyBlocking(checks []prereq.CheckResult) bool {
 // the host/CLI metadata. It is the single source of truth for the report shape
 // shared by --json output and the Hub upload. ctx is threaded so the OS-version
 // probe shares the command's cancellation.
-func buildDoctorReport(ctx context.Context, checks []prereq.CheckResult) doctorReport {
+func buildDoctorReport(ctx context.Context, kind stack.Kind, checks []prereq.CheckResult) doctorReport {
 	return doctorReport{
 		OK:         !anyBlocking(checks),
+		Stack:      reportedStack(kind),
 		OS:         runtime.GOOS,
 		OSVersion:  osVersion(ctx),
 		Arch:       runtime.GOARCH,
@@ -198,8 +226,8 @@ func buildDoctorReport(ctx context.Context, checks []prereq.CheckResult) doctorR
 
 // emitDoctorJSON writes the machine form. ctx is threaded so the OS-version
 // probe shares the command's cancellation.
-func emitDoctorJSON(ctx context.Context, w io.Writer, checks []prereq.CheckResult) error {
-	rep := buildDoctorReport(ctx, checks)
+func emitDoctorJSON(ctx context.Context, w io.Writer, kind stack.Kind, checks []prereq.CheckResult) error {
+	rep := buildDoctorReport(ctx, kind, checks)
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")
 	return enc.Encode(rep)
@@ -208,8 +236,11 @@ func emitDoctorJSON(ctx context.Context, w io.Writer, checks []prereq.CheckResul
 // printDoctorHuman writes the LLM-pasteable summary: one line per check, an
 // indented fix line for each non-ok check, a fixability tally, and a "paste this
 // into Claude/Codex" hint when anything is wrong.
-func printDoctorHuman(w io.Writer, checks []prereq.CheckResult) {
+func printDoctorHuman(w io.Writer, kind stack.Kind, checks []prereq.CheckResult) {
 	fmt.Fprintf(w, "keyto doctor — local prerequisite diagnosis (%s/%s)\n\n", runtime.GOOS, runtime.GOARCH)
+	if s := reportedStack(kind); s != "" {
+		fmt.Fprintf(w, "stack: %s (wrangler dev — no Docker needed)\n\n", s)
+	}
 
 	var auto, command, manual int
 	for _, c := range checks {
@@ -241,6 +272,15 @@ func printDoctorHuman(w io.Writer, checks []prereq.CheckResult) {
 	} else {
 		fmt.Fprintln(w, "\nAll prerequisites look good — you're ready to `keyto start`.")
 	}
+}
+
+// reportedStack is the stack doctor names: "workers" for a Workers checkout,
+// "" otherwise (the Next.js output predates stacks and stays unchanged).
+func reportedStack(k stack.Kind) string {
+	if k == stack.Workers {
+		return string(stack.Workers)
+	}
+	return ""
 }
 
 // realOSVersion probes the OS version string per platform. Best-effort: any

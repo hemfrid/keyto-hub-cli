@@ -4,6 +4,9 @@
 // partitions keys by localSource hint, builds container-side URLs locally,
 // fetches UAT-hinted values from the Hub in one batched call, and writes a
 // managed .env file (0600) for local docker-compose dev.
+//
+// A Workers repo (wrangler.json) instead gets a managed .dev.vars built from
+// .environments; see workers.go.
 package envsync
 
 import (
@@ -21,6 +24,7 @@ import (
 
 	"github.com/hemfrid/keyto-hub-cli/internal/config"
 	"github.com/hemfrid/keyto-hub-cli/internal/project"
+	"github.com/hemfrid/keyto-hub-cli/internal/stack"
 )
 
 // HubFetcher is the function type for fetching UAT/prod values from the Hub.
@@ -400,26 +404,12 @@ func renderEnv(
 	return sb.String()
 }
 
-// writeEnvFile writes content to path with permissions 0600 + explicit Chmod.
-func writeEnvFile(path, content string) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return fmt.Errorf("create parent directory for %s: %w", path, err)
-	}
-	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
-		return fmt.Errorf("write %s: %w", path, err)
-	}
-	if err := os.Chmod(path, 0o600); err != nil {
-		return fmt.Errorf("chmod %s: %w", path, err)
-	}
-	return nil
-}
-
 // Run implements `keyto env sync [flags]`.
 //
 // Flags:
 //
 //	--env uat|prod   target environment (default: uat)
-//	--out <path>     output path (default: <cwd>/.env)
+//	--out <path>     output path (default: <cwd>/.env, or <cwd>/.dev.vars on Workers)
 //	--print          write to Deps.Out instead of a file
 //	--allow-prod     required to use --env prod
 func Run(ctx context.Context, args []string, d Deps) error {
@@ -427,7 +417,7 @@ func Run(ctx context.Context, args []string, d Deps) error {
 	fs := flag.NewFlagSet("env sync", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	targetEnv := fs.String("env", "uat", "target environment (uat|prod)")
-	outPath := fs.String("out", "", "output path (default: <cwd>/.env)")
+	outPath := fs.String("out", "", "output path (default: <cwd>/.env, or .dev.vars on Workers)")
 	printMode := fs.Bool("print", false, "write to stdout instead of a file")
 	allowProd := fs.Bool("allow-prod", false, "required to use --env prod")
 
@@ -452,6 +442,10 @@ func Run(ctx context.Context, args []string, d Deps) error {
 	}
 	if marker == nil {
 		return fmt.Errorf("env sync: no .keyto/project.json found — run `keyto start` first")
+	}
+
+	if stack.Detect(d.Cwd) == stack.Workers {
+		return runWorkers(ctx, d, marker, *targetEnv, *outPath, *printMode)
 	}
 
 	// Read inventory.
