@@ -94,12 +94,23 @@ if [[ "$status" != 2* ]]; then
 fi
 
 # Newest first by version in the title; keep the newest $KEEP, never the one just added.
-jq -r --arg p "$TITLE_PREFIX" --arg h "$HASH" '
+# Don't trust the server-side $filter: the token can delete any indicator in the
+# tenant, so re-check application, action and type here. @tsv escapes tabs and
+# newlines inside fields, and an empty id becomes "(none)" so read can't shift
+# columns (consecutive tabs collapse in IFS).
+if ! jq -r --arg p "$TITLE_PREFIX" --arg h "$HASH" --arg app "$APP_NAME" '
   .value[]
-  | select((.title // "") | startswith($p))
-  | select((.indicatorValue | ascii_downcase) != $h)
-  | "\(.title | ltrimstr("keyto "))\t\(.id)\t\(.indicatorValue)"' "$tmp/body" \
-  | sort -t $'\t' -k1,1 -V -r > "$tmp/older"
+  | select(.application == $app and .action == "Allowed" and .indicatorType == "FileSha256")
+  | select((.title | type) == "string" and (.title | startswith($p)))
+  | select((.indicatorValue // "" | ascii_downcase) != $h)
+  | [(.title | ltrimstr("keyto ")),
+     (.id | tostring | if . == "" then "(none)" else . end),
+     (.indicatorValue // "")]
+  | @tsv' "$tmp/body" \
+  | sort -t $'\t' -k1,1 -V -r > "$tmp/older"; then
+  echo "::warning::Skipped pruning: could not parse the indicator list"
+  exit 0
+fi
 
 # The current release takes one of the $KEEP slots.
 tail -n +"$KEEP" "$tmp/older" > "$tmp/delete"
@@ -110,6 +121,10 @@ if [[ ! -s "$tmp/delete" ]]; then
 fi
 
 while IFS=$'\t' read -r ver id value; do
+  if [[ ! "$id" =~ ^[0-9]+$ ]]; then
+    echo "::warning::Skipped indicator with unexpected id '${id}' (keyto ${ver}): not deleting"
+    continue
+  fi
   status="$(api DELETE "/api/indicators/${id}")" || status="000"
   if [[ "$status" == 2* || "$status" == 404 ]]; then
     echo "Pruned indicator ${id} (keyto ${ver}, ${value})"
