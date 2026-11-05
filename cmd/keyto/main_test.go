@@ -98,8 +98,25 @@ func TestStartPrereqTip_Workers_NeedsNoDocker(t *testing.T) {
 		t.Fatalf("a Workers checkout with Node needs no tip, got %q", got)
 	}
 	got := startPrereqTip(tipDeps(map[string]string{}), stack.Workers)
-	if !strings.Contains(got, "Node 20") || strings.Contains(got, "Docker") {
-		t.Fatalf("a Workers tip names Node only, got %q", got)
+	if !strings.Contains(got, "Node 22+") || strings.Contains(got, "Docker") {
+		t.Fatalf("a Workers tip names Node 22+ only, got %q", got)
+	}
+}
+
+// wrangler 4 refuses Node below 22, so a Workers checkout on Node 20 or 21
+// gets the heads-up; Next.js on the same Node does not.
+func TestStartPrereqTip_Workers_Node20NeedsNode22(t *testing.T) {
+	for _, v := range []string{"v20.11.0", "v21.7.3"} {
+		got := startPrereqTip(tipDeps(map[string]string{"node": v}), stack.Workers)
+		if !strings.Contains(got, "missing: Node 22+") || strings.Contains(got, "Node 20") {
+			t.Errorf("Workers on %s: tip = %q, want it to ask for Node 22+", v, got)
+		}
+		if tip := startPrereqTip(tipDeps(map[string]string{"docker": "27", "node": v}), stack.NextJS); tip != "" {
+			t.Errorf("Next.js on %s needs no tip, got %q", v, tip)
+		}
+	}
+	if got := startPrereqTip(tipDeps(map[string]string{"node": "v22.0.0"}), stack.Workers); got != "" {
+		t.Errorf("Workers on Node 22.0.0 needs no tip, got %q", got)
 	}
 }
 

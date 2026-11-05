@@ -1,6 +1,6 @@
 //go:build unix
 
-package envsync
+package safefile
 
 import "syscall"
 

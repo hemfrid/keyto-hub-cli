@@ -23,7 +23,12 @@ type Deps struct {
 	EnvSync       func(ctx context.Context) error
 	// EnvFileExists reports whether the named env file (".env" or
 	// ".dev.vars") exists in the project directory.
-	EnvFileExists      func(name string) bool
+	EnvFileExists func(name string) bool
+	// NpmLane, on a Workers checkout, keeps the keyto credential for the
+	// Hub's package lane in ~/.npmrc (internal/npmrc; a host-scoped auth line,
+	// no registry). Its error is a tip: it never stops the boot. nil skips the
+	// step.
+	NpmLane            func(ctx context.Context) error
 	HasCompose         func() bool
 	ComposeUp          func(ctx context.Context) error
 	DBRunning          func(ctx context.Context) bool
@@ -48,10 +53,11 @@ func shouldOpenApp(d Deps, f Flags) bool {
 }
 
 // Prereqs returns the tools `keyto start` needs for a stack. A Workers repo
-// runs on Node alone (wrangler dev, local D1/KV), so it needs no Docker.
+// runs on Node alone (wrangler dev, local D1/KV), so it needs no Docker, but
+// its Node floor is wrangler 4's 22 (prereq.NodeWorkers), not Next.js's 20.9.
 func Prereqs(k stack.Kind) []prereq.Tool {
 	if k == stack.Workers {
-		return []prereq.Tool{prereq.Git, prereq.Node}
+		return []prereq.Tool{prereq.Git, prereq.NodeWorkers}
 	}
 	// next dev runs against `docker compose up`, so the Compose v2 plugin is
 	// a hard prerequisite alongside the docker engine itself.
@@ -103,6 +109,16 @@ func Run(ctx context.Context, d Deps, f Flags) error {
 		fmt.Fprintln(d.Out, "• starting backing services (docker compose up --wait)…")
 		if err := d.ComposeUp(ctx); err != nil {
 			return fmt.Errorf("docker compose up: %w (a port collision? set POSTGRES_PORT; or `docker compose logs`)", err)
+		}
+	}
+
+	// The @hemfrid packages a Workers repo depends on install through the Hub,
+	// so ~/.npmrc must hold the lane's credential before npm ci. It runs with
+	// --no-sync and --no-install too: a later hand-run npm ci needs the line.
+	if workers && d.NpmLane != nil {
+		fmt.Fprintln(d.Out, "• keyto credential for the Hub package lane (~/.npmrc)…")
+		if err := d.NpmLane(ctx); err != nil {
+			fmt.Fprintf(d.Out, "  tip: %v\n", err)
 		}
 	}
 
