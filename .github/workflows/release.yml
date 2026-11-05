@@ -5,21 +5,63 @@ name: release
 # (install.sh / install.ps1) and `keyto update` fetch the asset for the
 # host's GOOS/GOARCH from here. Asset names match Go's runtime.GOOS/GOARCH
 # so the client can compute the name without a manifest.
+#
+# Jobs: build → defender → publish.
+#
+# defender adds the Windows binary's sha256 as an "Allowed" file indicator in
+# Microsoft Defender for Endpoint on the hemfrid tenant
+# (scripts/defender-allow-hash.sh), so it is allowed before anyone can run
+# `keyto update`. It is the only job that can mint an OIDC token, and it runs
+# no third-party code after logging in: that token can allow-list any file on
+# hemfrid devices. The hash is taken from checksums.txt, so any step that
+# rewrites the .exe (e.g. Authenticode signing) must run in build before that.
+#
+# Defender config (Settings → Secrets and variables → Actions, no secrets):
+#   vars.DEFENDER_CLIENT_ID   Entra app in the hemfrid tenant with application
+#                             permission WindowsDefenderATP Ti.ReadWrite.All and a
+#                             federated credential for
+#                             repo:hemfrid/keyto-hub-cli:environment:release
+#   vars.DEFENDER_TENANT_ID   hemfrid tenant id
+#   vars.DEFENDER_RBAC_GROUPS optional, comma-separated device groups; unset = all devices
+#   vars.DEFENDER_KEEP        optional, releases kept allowed (default 5)
+# The federated credential trusts the `release` environment, so protect it:
+# allow only v* tags, require a reviewer, and restrict who may create v* tags
+# with a tag ruleset.
+# Every release waits for a required reviewer to approve the defender job in
+# the `release` environment, and publish runs only after defender succeeds:
+# no approval, or a failed Defender call, means nothing is published.
+#
+# Every action is pinned to a commit SHA: defender allow-lists whatever hash
+# build outputs, so build's actions are part of the trust chain too. For the
+# same reason build does not use the Go module/build cache: a tag run would
+# restore the cache ci.yml saves from main, which unreviewed code can poison.
+#
+# publish creates the GitHub Release as a draft with every asset attached,
+# checks the draft's assets are exactly the files in dist/, and only then
+# publishes it with `gh release edit --draft=false`. With immutable releases
+# on, a published release and its assets are locked, so assets can only be
+# attached while the release is a draft; publishing last also means nobody
+# can download a release that is missing an asset or carries a stale one.
 on:
   push:
     tags: ['v*']
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  release:
+  build:
     runs-on: ubuntu-latest
+    outputs:
+      windows_sha256: ${{ steps.checksums.outputs.windows_sha256 }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
           go-version: '1.25'
+          cache: false   # never restore the cache ci.yml saves from main: unreviewed code can poison it
 
       - name: Build binaries
         run: |
@@ -33,11 +75,131 @@ jobs:
             GOOS="$GOOS" GOARCH="$GOARCH" \
               go build -trimpath -ldflags "-s -w -X main.version=${VERSION}" -o "$out" ./cmd/keyto
           done
+
+      - name: Checksums
+        id: checksums
+        run: |
+          set -euo pipefail
           ( cd dist && sha256sum keyto_* > checksums.txt )
           ls -l dist
+          hash="$(awk '$2 == "keyto_windows_amd64.exe" {print $1}' dist/checksums.txt)"
+          [ -n "$hash" ] || { echo "::error::keyto_windows_amd64.exe missing from checksums.txt"; exit 1; }
+          echo "windows_sha256=$hash" >> "$GITHUB_OUTPUT"
 
-      - name: Publish GitHub Release
-        uses: softprops/action-gh-release@v2
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: dist
+          path: dist/
+          if-no-files-found: error
+          retention-days: 1
+
+  defender:
+    needs: build
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      contents: read
+      id-token: write   # OIDC login to the hemfrid tenant for the Defender API
+    # Every step here can mint an OIDC token, so every action is pinned to a
+    # commit SHA and nothing else is fetched or run.
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - name: Check Defender config
+        env:
+          DEFENDER_CLIENT_ID: ${{ vars.DEFENDER_CLIENT_ID }}
+          DEFENDER_TENANT_ID: ${{ vars.DEFENDER_TENANT_ID }}
+        run: |
+          if [ -z "$DEFENDER_CLIENT_ID" ] || [ -z "$DEFENDER_TENANT_ID" ]; then
+            echo "::error::DEFENDER_CLIENT_ID and DEFENDER_TENANT_ID repo variables must be set"; exit 1
+          fi
+
+      - name: Azure login (hemfrid tenant, OIDC)
+        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
+        with:
+          client-id: ${{ vars.DEFENDER_CLIENT_ID }}
+          tenant-id: ${{ vars.DEFENDER_TENANT_ID }}
+          allow-no-subscriptions: true
+
+      - name: Allow Windows binary in Defender
+        env:
+          VERSION: ${{ github.ref_name }}
+          HASH: ${{ needs.build.outputs.windows_sha256 }}
+          KEEP: ${{ vars.DEFENDER_KEEP || '5' }}
+          RBAC_GROUPS: ${{ vars.DEFENDER_RBAC_GROUPS }}
+        run: |
+          set -euo pipefail
+          DEFENDER_TOKEN="$(az account get-access-token \
+            --resource https://api.securitycenter.microsoft.com \
+            --query accessToken -o tsv)"
+          echo "::add-mask::$DEFENDER_TOKEN"
+          export DEFENDER_TOKEN
+          ./scripts/defender-allow-hash.sh
+
+      - name: Azure logout
+        if: always()
+        run: az logout || true
+
+  publish:
+    # Default `needs` semantics: runs only if build and defender both
+    # succeeded, i.e. after the release was approved and allowed in Defender.
+    needs: [build, defender]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: dist
+          path: dist
+
+      - name: Check published binary matches the allowed hash
+        env:
+          HASH: ${{ needs.build.outputs.windows_sha256 }}
+        run: |
+          set -euo pipefail
+          echo "$HASH  dist/keyto_windows_amd64.exe" | sha256sum -c -
+
+      # draft: true stops the action publishing the release after its
+      # uploads; the last step publishes it once the assets are checked.
+      - name: Create draft GitHub Release with assets
+        id: release
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:
           files: dist/*
+          draft: true
           generate_release_notes: true
+
+      - name: Check draft assets match dist/
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+          RELEASE_ID: ${{ steps.release.outputs.id }}
+        run: |
+          set -euo pipefail
+          json="$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json databaseId,isDraft,assets)"
+          if [ "$(jq -r .databaseId <<<"$json")" != "$RELEASE_ID" ]; then
+            echo "::error::release found for $TAG is not the draft the action created (id $RELEASE_ID)"; exit 1
+          fi
+          if [ "$(jq -r .isDraft <<<"$json")" != "true" ]; then
+            echo "::error::release $TAG is already published"; exit 1
+          fi
+          want="$(find dist -maxdepth 1 -type f -printf '%f\n' | LC_ALL=C sort)"
+          got="$(jq -r '.assets[].name' <<<"$json" | LC_ALL=C sort)"
+          not_uploaded="$(jq -r '.assets[] | select(.state != "uploaded") | .name' <<<"$json")"
+          if [ -z "$want" ] || [ "$want" != "$got" ] || [ -n "$not_uploaded" ]; then
+            echo "::error::draft release assets differ from dist/"
+            echo "dist/:"; echo "$want"
+            echo "draft:"; echo "$got"
+            [ -z "$not_uploaded" ] || { echo "not fully uploaded:"; echo "$not_uploaded"; }
+            exit 1
+          fi
+          echo "draft has exactly the $(wc -l <<<"$want") files in dist/"
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false --latest

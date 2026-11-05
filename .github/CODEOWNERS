@@ -1,0 +1,6 @@
+# The release workflow holds an OIDC trust to the hemfrid tenant whose token
+# can allow-list files in Defender for Endpoint on every hemfrid device.
+# Changes to workflows and the Defender script need Rasmus's review (#40).
+/.github/workflows/                @RasmusHemfrid
+/scripts/defender-allow-hash.sh    @RasmusHemfrid
+/.github/CODEOWNERS                @RasmusHemfrid
