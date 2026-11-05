@@ -27,8 +27,12 @@ name: release
 # The federated credential trusts the `release` environment, so protect it:
 # allow only v* tags, require a reviewer, and restrict who may create v* tags
 # with a tag ruleset.
-# While DEFENDER_CLIENT_ID is unset, defender is skipped and publish warns.
-# Once set, a failed Defender call stops the release before it is published.
+# Every release waits for a required reviewer to approve the defender job in
+# the `release` environment, and publish runs only after defender succeeds:
+# no approval, or a failed Defender call, means nothing is published.
+#
+# Every action is pinned to a commit SHA: defender allow-lists whatever hash
+# build outputs, so build's actions are part of the trust chain too.
 on:
   push:
     tags: ['v*']
@@ -42,8 +46,10 @@ jobs:
     outputs:
       windows_sha256: ${{ steps.checksums.outputs.windows_sha256 }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
           go-version: '1.25'
 
@@ -70,7 +76,7 @@ jobs:
           [ -n "$hash" ] || { echo "::error::keyto_windows_amd64.exe missing from checksums.txt"; exit 1; }
           echo "windows_sha256=$hash" >> "$GITHUB_OUTPUT"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: dist
           path: dist/
@@ -79,7 +85,6 @@ jobs:
 
   defender:
     needs: build
-    if: vars.DEFENDER_CLIENT_ID != ''
     runs-on: ubuntu-latest
     environment: release
     permissions:
@@ -91,6 +96,15 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false
+
+      - name: Check Defender config
+        env:
+          DEFENDER_CLIENT_ID: ${{ vars.DEFENDER_CLIENT_ID }}
+          DEFENDER_TENANT_ID: ${{ vars.DEFENDER_TENANT_ID }}
+        run: |
+          if [ -z "$DEFENDER_CLIENT_ID" ] || [ -z "$DEFENDER_TENANT_ID" ]; then
+            echo "::error::DEFENDER_CLIENT_ID and DEFENDER_TENANT_ID repo variables must be set"; exit 1
+          fi
 
       - name: Azure login (hemfrid tenant, OIDC)
         uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
@@ -119,18 +133,14 @@ jobs:
         run: az logout || true
 
   publish:
+    # Default `needs` semantics: runs only if build and defender both
+    # succeeded, i.e. after the release was approved and allowed in Defender.
     needs: [build, defender]
-    # Run when build succeeded and defender either succeeded or was skipped
-    # (not configured); never after a Defender failure.
-    if: >-
-      always() &&
-      needs.build.result == 'success' &&
-      (needs.defender.result == 'success' || needs.defender.result == 'skipped')
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: dist
           path: dist
@@ -138,16 +148,12 @@ jobs:
       - name: Check published binary matches the allowed hash
         env:
           HASH: ${{ needs.build.outputs.windows_sha256 }}
-          DEFENDER: ${{ needs.defender.result }}
         run: |
           set -euo pipefail
           echo "$HASH  dist/keyto_windows_amd64.exe" | sha256sum -c -
-          if [ "$DEFENDER" = "skipped" ]; then
-            echo "::warning::Defender is not configured (DEFENDER_CLIENT_ID unset): add $HASH as an Allowed file indicator by hand."
-          fi
 
       - name: Publish GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:
           files: dist/*
           generate_release_notes: true
