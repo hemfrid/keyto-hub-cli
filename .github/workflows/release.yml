@@ -5,16 +5,37 @@ name: release
 # (install.sh / install.ps1) and `keyto update` fetch the asset for the
 # host's GOOS/GOARCH from here. Asset names match Go's runtime.GOOS/GOARCH
 # so the client can compute the name without a manifest.
+#
+# Before publishing, the Windows binary's sha256 is added as an "Allowed" file
+# indicator in Microsoft Defender for Endpoint on the hemfrid tenant
+# (scripts/defender-allow-hash.sh), so it is allowed before anyone can run
+# `keyto update`. The hash is read from checksums.txt, so any step that
+# rewrites the .exe (e.g. Authenticode signing) must come before that file.
+#
+# Defender config (Settings → Secrets and variables → Actions, no secrets):
+#   vars.DEFENDER_CLIENT_ID   Entra app in the hemfrid tenant with application
+#                             permission WindowsDefenderATP Ti.ReadWrite.All and a
+#                             federated credential for
+#                             repo:hemfrid/keyto-hub-cli:environment:release
+#   vars.DEFENDER_TENANT_ID   hemfrid tenant id
+#   vars.DEFENDER_RBAC_GROUPS optional, comma-separated device groups; unset = all devices
+#   vars.DEFENDER_KEEP        optional, releases kept allowed (default 5)
+# While DEFENDER_CLIENT_ID is unset the Defender step is skipped with a warning.
+# Once set, a failed Defender call fails the release before it is published.
 on:
   push:
     tags: ['v*']
 
 permissions:
   contents: write
+  id-token: write   # OIDC login to the hemfrid tenant for the Defender API
 
 jobs:
   release:
     runs-on: ubuntu-latest
+    # The federated credential on the Defender app trusts this environment;
+    # restrict it to v* tags (Settings → Environments → release).
+    environment: release
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -35,6 +56,48 @@ jobs:
           done
           ( cd dist && sha256sum keyto_* > checksums.txt )
           ls -l dist
+
+      - name: Check Defender config
+        id: defender
+        env:
+          DEFENDER_CLIENT_ID: ${{ vars.DEFENDER_CLIENT_ID }}
+          DEFENDER_TENANT_ID: ${{ vars.DEFENDER_TENANT_ID }}
+        run: |
+          if [ -z "$DEFENDER_CLIENT_ID" ]; then
+            echo "::warning::DEFENDER_CLIENT_ID is not set: keyto_windows_amd64.exe was NOT allowed in Defender. Add its hash by hand."
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+          elif [ -z "$DEFENDER_TENANT_ID" ]; then
+            echo "::error::DEFENDER_CLIENT_ID is set but DEFENDER_TENANT_ID is not"; exit 1
+          else
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Azure login (hemfrid tenant, OIDC)
+        if: steps.defender.outputs.enabled == 'true'
+        uses: azure/login@v2
+        with:
+          client-id: ${{ vars.DEFENDER_CLIENT_ID }}
+          tenant-id: ${{ vars.DEFENDER_TENANT_ID }}
+          allow-no-subscriptions: true
+
+      - name: Allow Windows binary in Defender
+        if: steps.defender.outputs.enabled == 'true'
+        env:
+          VERSION: ${{ github.ref_name }}
+          KEEP: ${{ vars.DEFENDER_KEEP || '5' }}
+          RBAC_GROUPS: ${{ vars.DEFENDER_RBAC_GROUPS }}
+        run: |
+          set -euo pipefail
+          HASH="$(awk '$2 == "keyto_windows_amd64.exe" {print $1}' dist/checksums.txt)"
+          [ -n "$HASH" ] || { echo "::error::keyto_windows_amd64.exe missing from checksums.txt"; exit 1; }
+          # Re-check: the published file must be exactly what we allow.
+          echo "$HASH  dist/keyto_windows_amd64.exe" | sha256sum -c -
+          DEFENDER_TOKEN="$(az account get-access-token \
+            --resource https://api.securitycenter.microsoft.com \
+            --query accessToken -o tsv)"
+          echo "::add-mask::$DEFENDER_TOKEN"
+          export HASH DEFENDER_TOKEN
+          ./scripts/defender-allow-hash.sh
 
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
