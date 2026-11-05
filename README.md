@@ -75,8 +75,8 @@ The everyday loop is **`keyto checkout <project>` → `keyto start`**:
 > `hemfrid/keyto-hub-workers-template`), and `keyto start` runs a shorter loop
 > for it: the preflight checks **git and Node ≥22 only** (no Docker, no
 > Compose; wrangler 4 refuses Node below 22), `keyto env sync` writes
-> **`.dev.vars`** instead of `.env`, `~/.npmrc` is pointed at the Hub's
-> `@hemfrid` package lane (below), there
+> **`.dev.vars`** instead of `.env`, `~/.npmrc` gets your keyto credential
+> for the Hub's `@hemfrid` package lane (below), there
 > are no backing services to start (D1 and KV run inside wrangler), `npm run
 > migrate` applies the D1 migrations locally whenever the script exists, and
 > `npm run dev` starts `wrangler dev`.
@@ -101,24 +101,32 @@ The everyday loop is **`keyto checkout <project>` → `keyto start`**:
 >
 > A Workers repo depends on the private `@hemfrid/workers-*` packages, which
 > the Hub serves at `<hub>/api/npm/` to anyone signed in with keyto (no GitHub
-> token needed). Before `npm install`, `keyto start` keeps two lines in your
+> token needed). Before `npm install`, `keyto start` keeps one line in your
 > npm user config (`~/.npmrc`, or `$npm_config_userconfig`):
 >
 > ```
 > # keyto-managed begin: @hemfrid package lane (keyto start rewrites the lines up to the end marker)
-> @hemfrid:registry=https://hub.keytolabs.com/api/npm/
 > //hub.keytolabs.com/api/npm/:_authToken=<your keyto credential>
 > # keyto-managed end
 > ```
 >
+> That line only says which token npm sends to the Hub's `/api/npm/`; it maps
+> no registry, so other repos' `@hemfrid` packages (GitHub Packages) resolve
+> exactly as before. Which packages come from the Hub is the project's choice:
+> the `npm install` that `keyto start` runs gets
+> `npm_config_@hemfrid:registry=<hub>/api/npm/` in its own environment, and a
+> hand-run `npm ci` needs the project's `.npmrc` to map `@hemfrid` to the Hub.
+> v0.9.x wrote a user-wide `@hemfrid:registry=` line inside the same markers;
+> `keyto start` removes it (that line only, even when you're signed out).
+>
 > Only the lines between the markers are keyto's: every other line stays as
 > it is, and a new credential (after `keyto auth --force`) replaces the token
 > in place on the next `keyto start`. The file is written 0600 through a temp
-> file and a rename, and the token is never printed. keyto writes nothing when
-> the Hub doesn't serve the lane yet (it asks first, without your credential),
-> when you aren't signed in (it prints a tip and the boot carries on), or when
-> `~/.npmrc` is a symlink (it prints the lines to add to the real file
-> yourself). Next.js repos never touch `~/.npmrc`.
+> file and a rename, and the token is never printed. keyto writes no
+> credential when the Hub doesn't serve the lane yet (it asks first, without
+> your credential), when you aren't signed in (it prints a tip and the boot
+> carries on), or when `~/.npmrc` is a symlink (it prints the line to add to
+> the real file yourself). Next.js repos never touch `~/.npmrc`.
 
 Then edit locally (with Claude Code, your editor, whatever) and `git push` — it
 flows through the Keyto Hub to GitHub.
@@ -265,7 +273,7 @@ go build -o keyto ./cmd/keyto
   the browser (`--no-open` to skip; skipped automatically on CI/non-interactive).
   A Workers repo (`wrangler.json`) skips Docker entirely: git/Node 22+ checks →
   `keyto env sync` (writes `.dev.vars` from `.environments`, with
-  `KEYTO_DEV_USER=1`) → `~/.npmrc` `@hemfrid` lines → `npm install` (if
+  `KEYTO_DEV_USER=1`) → `~/.npmrc` lane credential line → `npm install` (if
   needed) → `npm run migrate` (local D1) → `npm run dev` (`wrangler dev`).
 - `git push` → the credential helper supplies the credential → the Hub authorizes
   you live against project membership → relays to GitHub as the App. Revoking your

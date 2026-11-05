@@ -24,9 +24,10 @@ type Deps struct {
 	// EnvFileExists reports whether the named env file (".env" or
 	// ".dev.vars") exists in the project directory.
 	EnvFileExists func(name string) bool
-	// NpmLane, on a Workers checkout, points the @hemfrid npm scope at the
-	// Hub's package lane in ~/.npmrc (internal/npmrc). Its error is a tip:
-	// it never stops the boot. nil skips the step.
+	// NpmLane, on a Workers checkout, keeps the keyto credential for the
+	// Hub's package lane in ~/.npmrc (internal/npmrc; a host-scoped auth line,
+	// no registry). Its error is a tip: it never stops the boot. nil skips the
+	// step.
 	NpmLane            func(ctx context.Context) error
 	HasCompose         func() bool
 	ComposeUp          func(ctx context.Context) error
@@ -112,10 +113,10 @@ func Run(ctx context.Context, d Deps, f Flags) error {
 	}
 
 	// The @hemfrid packages a Workers repo depends on install through the Hub,
-	// so ~/.npmrc must name it before npm ci. It runs with --no-sync and
-	// --no-install too: a later hand-run npm ci needs the same lines.
+	// so ~/.npmrc must hold the lane's credential before npm ci. It runs with
+	// --no-sync and --no-install too: a later hand-run npm ci needs the line.
 	if workers && d.NpmLane != nil {
-		fmt.Fprintln(d.Out, "• pointing @hemfrid at the Hub package lane (~/.npmrc)…")
+		fmt.Fprintln(d.Out, "• keyto credential for the Hub package lane (~/.npmrc)…")
 		if err := d.NpmLane(ctx); err != nil {
 			fmt.Fprintf(d.Out, "  tip: %v\n", err)
 		}
