@@ -42,13 +42,13 @@ func ensureNpmLane(ctx context.Context, creds *config.Creds, out io.Writer) (str
 	return npmrc.Ensure(ctx, d)
 }
 
-// npmLaneEnv is the extra environment for the npm install `keyto start` runs:
-// @hemfrid mapped to the lane, for that one process, when the lane's
-// credential line is in place. The user's npm config is never given the scope,
-// so no other repo's @hemfrid packages move.
-func npmLaneEnv(registry string) []string {
+// npmLaneArgs are the extra arguments for the npm install `keyto start` runs:
+// @hemfrid mapped to the lane, for that one run, when the lane's credential
+// line is in place. The user's npm config is never given the scope, so no
+// other repo's @hemfrid packages move.
+func npmLaneArgs(registry string) []string {
 	if registry == "" {
 		return nil
 	}
-	return []string{npmrc.ScopeEnv(registry)}
+	return []string{npmrc.ScopeFlag(registry)}
 }

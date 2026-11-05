@@ -464,7 +464,7 @@ func bootDeps(ctx context.Context, cwd string, flags boot.Flags, creds *config.C
 		},
 		EnvSync: func(ctx context.Context) error { return runEnvSyncWithCreds(ctx, nil, creds) },
 		// Workers only (boot.Run gates it): ~/.npmrc gets the lane's credential
-		// line, and the install below gets the @hemfrid scope through its env.
+		// line, and the install below gets the @hemfrid scope as a flag.
 		NpmLane: func(ctx context.Context) error {
 			registry, err := ensureNpmLane(ctx, creds, os.Stderr)
 			laneRegistry = registry
@@ -484,7 +484,7 @@ func bootDeps(ctx context.Context, cwd string, flags boot.Flags, creds *config.C
 		},
 		DBRunning:          func(ctx context.Context) bool { return composeDBRunning(ctx, cwd) },
 		NodeModulesPresent: func() bool { return dirExists(filepath.Join(cwd, "node_modules")) },
-		Install:            func(ctx context.Context) error { return npmInstall(ctx, cwd, npmLaneEnv(laneRegistry)) },
+		Install:            func(ctx context.Context) error { return npmInstall(ctx, cwd, npmLaneArgs(laneRegistry)) },
 		RunScript:          func(ctx context.Context, script string) error { return runNpmScript(ctx, cwd, script) },
 		// nil on CI / non-interactive shells (browserOpener returns nil) — boot
 		// then skips the open. --no-open is handled separately via flags.NoOpen.
@@ -581,18 +581,15 @@ func composeDBRunning(ctx context.Context, dir string) bool {
 }
 
 // npmInstall runs `npm ci` when a lockfile is present (reproducible install),
-// else `npm install`, with extraEnv added to the environment. Output streams to
+// else `npm install`, with extraArgs after the subcommand. Output streams to
 // stderr to keep stdout clean.
-func npmInstall(ctx context.Context, dir string, extraEnv []string) error {
+func npmInstall(ctx context.Context, dir string, extraArgs []string) error {
 	sub := "install"
 	if fileExists(filepath.Join(dir, "package-lock.json")) {
 		sub = "ci"
 	}
-	cmd := exec.CommandContext(ctx, "npm", sub)
+	cmd := exec.CommandContext(ctx, "npm", append([]string{sub}, extraArgs...)...)
 	cmd.Dir = dir
-	if len(extraEnv) > 0 {
-		cmd.Env = append(os.Environ(), extraEnv...)
-	}
 	cmd.Stdout = os.Stderr
 	cmd.Stderr = os.Stderr
 	return cmd.Run()

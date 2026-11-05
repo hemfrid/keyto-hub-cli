@@ -473,8 +473,8 @@ func TestEnsure_UsersOwnScopeLine_NeverTouched(t *testing.T) {
 	}
 }
 
-func TestScopeEnv(t *testing.T) {
-	if got := npmrc.ScopeEnv(laneRegistry); got != "npm_config_@hemfrid:registry="+laneRegistry {
-		t.Fatalf("ScopeEnv = %q", got)
+func TestScopeFlag(t *testing.T) {
+	if got := npmrc.ScopeFlag(laneRegistry); got != "--@hemfrid:registry="+laneRegistry {
+		t.Fatalf("ScopeFlag = %q", got)
 	}
 }

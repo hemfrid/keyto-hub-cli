@@ -114,7 +114,7 @@ The everyday loop is **`keyto checkout <project>` → `keyto start`**:
 > no registry, so other repos' `@hemfrid` packages (GitHub Packages) resolve
 > exactly as before. Which packages come from the Hub is the project's choice:
 > the `npm install` that `keyto start` runs gets
-> `npm_config_@hemfrid:registry=<hub>/api/npm/` in its own environment, and a
+> `--@hemfrid:registry=<hub>/api/npm/` on its own command line, and a
 > hand-run `npm ci` needs the project's `.npmrc` to map `@hemfrid` to the Hub.
 > v0.9.x wrote a user-wide `@hemfrid:registry=` line inside the same markers;
 > `keyto start` removes it (that line only, even when you're signed out).

@@ -9,7 +9,7 @@
 // Hub's /api/npm/ prefix; it changes no registry, so no other repo on the
 // machine resolves anything differently. Which packages go to the Hub is the
 // project's choice (its own .npmrc scope line), and `keyto start` passes the
-// scope to its own npm install through the environment (ScopeEnv).
+// scope to its own npm install as a command-line flag (ScopeFlag).
 //
 // v0.9.x before this wrote a user-wide `@hemfrid:registry=<hub>/api/npm/` line
 // inside the same markers. That sent every @hemfrid package on the laptop to a
@@ -73,11 +73,13 @@ func UserConfigPath(getenv func(string) string, home string) string {
 	return filepath.Join(home, ".npmrc")
 }
 
-// ScopeEnv is the environment entry that maps @hemfrid to registry for one
-// npm process. npm reads `npm_config_<key>` from the environment above the
-// project and user .npmrc files, so it reaches only the install keyto runs.
-func ScopeEnv(registry string) string {
-	return "npm_config_" + ScopeKey + "=" + registry
+// ScopeFlag is the npm command-line flag that maps @hemfrid to registry for
+// one npm run. A flag outranks the project and user .npmrc files, so it reaches
+// only the install keyto runs. (Not `npm_config_@hemfrid:registry` in the
+// environment: a name with "@" and ":" is dropped by dash, so an npm shim run
+// through /bin/sh on Linux would never see it.)
+func ScopeFlag(registry string) string {
+	return "--" + ScopeKey + "=" + registry
 }
 
 // laneLines is the managed line: npm's "nerf dart" auth line for the lane's
@@ -150,7 +152,7 @@ func credsLines(c *config.Creds) (laneLines, error) {
 // Ensure makes the managed block in d.Path hold the user's credential for the
 // lane, and removes the user-wide scope line earlier releases put inside it.
 // It returns the lane's registry URL when the credential line is in place
-// (the caller passes it to npm with ScopeEnv), else "".
+// (the caller passes it to npm with ScopeFlag), else "".
 //
 // The error is a tip for the user, never fatal to `keyto start`: no
 // credential, a symlinked or unreadable file, or a block with no end marker.

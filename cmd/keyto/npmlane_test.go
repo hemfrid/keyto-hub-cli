@@ -93,21 +93,21 @@ func TestEnsureNpmLane_NotSignedIn_Tip(t *testing.T) {
 	}
 }
 
-func TestNpmLaneEnv(t *testing.T) {
-	if got := npmLaneEnv(""); got != nil {
-		t.Fatalf("no lane must add no env, got %v", got)
+func TestNpmLaneArgs(t *testing.T) {
+	if got := npmLaneArgs(""); got != nil {
+		t.Fatalf("no lane must add no args, got %v", got)
 	}
-	got := npmLaneEnv("https://hub.example.com/api/npm/")
-	if len(got) != 1 || got[0] != "npm_config_@hemfrid:registry=https://hub.example.com/api/npm/" {
-		t.Fatalf("npmLaneEnv = %v", got)
+	got := npmLaneArgs("https://hub.example.com/api/npm/")
+	if len(got) != 1 || got[0] != "--@hemfrid:registry=https://hub.example.com/api/npm/" {
+		t.Fatalf("npmLaneArgs = %v", got)
 	}
 }
 
-// TestBootDeps_InstallGetsTheScopeOnlyThroughItsEnv runs the real NpmLane and
+// TestBootDeps_InstallGetsTheScopeOnlyAsAFlag runs the real NpmLane and
 // Install closures against a fake Hub and a fake npm on PATH: the scope reaches
-// the npm process through its environment, and the user's npm config (an old
-// v0.9.x block in it) ends up with the credential line and no scope line.
-func TestBootDeps_InstallGetsTheScopeOnlyThroughItsEnv(t *testing.T) {
+// the npm run as a flag, and the user's npm config (an old v0.9.x block in it)
+// ends up with the credential line and no scope line.
+func TestBootDeps_InstallGetsTheScopeOnlyAsAFlag(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("the fake npm is a shell script")
 	}
@@ -126,8 +126,8 @@ func TestBootDeps_InstallGetsTheScopeOnlyThroughItsEnv(t *testing.T) {
 	t.Setenv("npm_config_userconfig", npmrcPath)
 
 	bin := t.TempDir()
-	envOut := filepath.Join(t.TempDir(), "npm-env")
-	fakeNpm := "#!/bin/sh\nenv > '" + envOut + "'\n"
+	argsOut := filepath.Join(t.TempDir(), "npm-args")
+	fakeNpm := "#!/bin/sh\nprintf '%s\\n' \"$@\" > '" + argsOut + "'\n"
 	if err := os.WriteFile(filepath.Join(bin, "npm"), []byte(fakeNpm), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -140,12 +140,12 @@ func TestBootDeps_InstallGetsTheScopeOnlyThroughItsEnv(t *testing.T) {
 	if err := d.Install(context.Background()); err != nil {
 		t.Fatalf("Install: %v", err)
 	}
-	env, err := os.ReadFile(envOut)
+	args, err := os.ReadFile(argsOut)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := "npm_config_@hemfrid:registry=" + srv.URL + "/api/npm/\n"; !strings.Contains(string(env), want) {
-		t.Fatalf("npm's env lacks %q:\n%s", want, env)
+	if want := "install\n--@hemfrid:registry=" + srv.URL + "/api/npm/\n"; string(args) != want {
+		t.Fatalf("npm args =\n%s\nwant\n%s", args, want)
 	}
 	got, _ := os.ReadFile(npmrcPath)
 	wantNpmrc := userOwn + npmrc.BeginMarker + "\n//" + host + "/api/npm/:_authToken=kt_stored\n" + npmrc.EndMarker + "\n"
