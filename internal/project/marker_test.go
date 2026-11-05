@@ -4,11 +4,25 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
 	"github.com/hemfrid/keyto-hub-cli/internal/project"
 )
+
+// symlinkOrSkip makes newname a link to oldname. It skips the test on
+// Windows, where creating a link needs Developer Mode or admin rights (CI runs
+// on Linux only).
+func symlinkOrSkip(t *testing.T, oldname, newname string) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("creating a symlink needs Developer Mode or admin rights on Windows")
+	}
+	if err := os.Symlink(oldname, newname); err != nil {
+		t.Fatal(err)
+	}
+}
 
 func TestWriteRead_RoundTrip(t *testing.T) {
 	dir := t.TempDir()
@@ -109,9 +123,7 @@ func TestWrite_SymlinkedMarkerFile_Refused(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(dir, ".keyto"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Symlink(victim, filepath.Join(dir, ".keyto", "project.json")); err != nil {
-		t.Fatal(err)
-	}
+	symlinkOrSkip(t, victim, filepath.Join(dir, ".keyto", "project.json"))
 
 	err := project.Write(dir, testMarker())
 	if err == nil || !strings.Contains(err.Error(), "project.json") || !strings.Contains(err.Error(), "symlink") {
@@ -125,9 +137,7 @@ func TestWrite_SymlinkedMarkerFile_Refused(t *testing.T) {
 func TestWrite_SymlinkedKeytoDir_Refused(t *testing.T) {
 	dir := t.TempDir()
 	target := t.TempDir() // e.g. ~/.ssh
-	if err := os.Symlink(target, filepath.Join(dir, ".keyto")); err != nil {
-		t.Fatal(err)
-	}
+	symlinkOrSkip(t, target, filepath.Join(dir, ".keyto"))
 
 	err := project.Write(dir, testMarker())
 	if err == nil || !strings.Contains(err.Error(), ".keyto") || !strings.Contains(err.Error(), "symlink") {
