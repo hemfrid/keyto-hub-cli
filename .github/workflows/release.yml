@@ -6,15 +6,15 @@ name: release
 # host's GOOS/GOARCH from here. Asset names match Go's runtime.GOOS/GOARCH
 # so the client can compute the name without a manifest.
 #
-# Jobs: build → defender → publish.
+# Jobs: build → sign → defender → publish.
 #
 # defender adds the Windows binary's sha256 as an "Allowed" file indicator in
 # Microsoft Defender for Endpoint on the hemfrid tenant
 # (scripts/defender-allow-hash.sh), so it is allowed before anyone can run
 # `keyto update`. It is the only job that can mint an OIDC token, and it runs
 # no third-party code after logging in: that token can allow-list any file on
-# hemfrid devices. The hash is taken from checksums.txt, so any step that
-# rewrites the .exe (e.g. Authenticode signing) must run in build before that.
+# hemfrid devices. The hash comes from the checksums.txt that sign writes after
+# signing, so the allowed hash is the signed binary's.
 #
 # Defender config (Settings → Secrets and variables → Actions, no secrets):
 #   vars.DEFENDER_CLIENT_ID   Entra app in the hemfrid tenant with application
@@ -31,15 +31,21 @@ name: release
 # the `release` environment, and publish runs only after defender succeeds:
 # no approval, or a failed Defender call, means nothing is published.
 #
-# build Authenticode-signs the Windows binary with DigiCert Software Trust
-# Manager (Greenthumb requirement) before checksums.txt is written, so the
-# allowed hash is the signed one. Config lives in the `signing` environment
-# (v* tags only): vars SM_HOST, SM_KEYPAIR_ALIAS; secrets SM_API_KEY,
-# SM_CLIENT_CERT_FILE_B64 (base64 .p12), SM_CLIENT_CERT_PASSWORD. Unset →
-# signing is skipped with a warning; partly set → the release fails.
+# build compiles the binaries with no secrets. sign then Authenticode-signs
+# the Windows binary with DigiCert Software Trust Manager (Greenthumb
+# requirement), verifies it, and writes checksums.txt. sign runs in the
+# `signing` environment: v* tags only, a required reviewer, no self-review,
+# no admin bypass. So nothing is signed with our certificate until a second
+# person approves, and an unapproved run leaves only unsigned artifacts.
+# Config, all required (a missing value fails the release):
+#   vars SM_HOST, SM_KEYPAIR_ALIAS
+#   secrets SM_API_KEY, SM_CLIENT_CERT_FILE_B64 (base64 .p12), SM_CLIENT_CERT_PASSWORD
+# These are environment secrets: as repo secrets, any workflow pushed to any
+# branch could read them and sign arbitrary files.
+# A release therefore takes two approvals: `signing`, then `release`.
 #
 # Every action is pinned to a commit SHA: defender allow-lists whatever hash
-# build outputs, so build's actions are part of the trust chain too. For the
+# sign outputs, so build's and sign's actions are part of the trust chain too. For the
 # same reason build does not use the Go module/build cache: a tag run would
 # restore the cache ci.yml saves from main, which unreviewed code can poison.
 #
@@ -59,13 +65,6 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
-    # The DigiCert signing secrets are environment secrets of `signing`, which
-    # only v* tags may use (no reviewer). Repo-level secrets would be readable
-    # by any workflow pushed to any branch, i.e. anyone with write access could
-    # sign arbitrary files with our certificate.
-    environment: signing
-    outputs:
-      windows_sha256: ${{ steps.checksums.outputs.windows_sha256 }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -87,13 +86,32 @@ jobs:
             GOOS="$GOOS" GOARCH="$GOARCH" \
               go build -trimpath -ldflags "-s -w -X main.version=${VERSION}" -o "$out" ./cmd/keyto
           done
+          ls -l dist
 
-      # --- Authenticode signing (Greenthumb requirement, #41) -----------------
-      # Must run before Checksums: signing rewrites the .exe, and checksums.txt,
-      # `keyto update` and the Defender indicator must all use the signed hash.
-      # Skipped with a warning while the `signing` environment isn't configured.
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: unsigned
+          path: dist/
+          if-no-files-found: error
+          retention-days: 1
+
+  sign:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15   # starts after approval
+    # Required reviewer, v* tags only, no admin bypass. Holds the DigiCert secrets.
+    environment: signing
+    permissions:
+      contents: read
+    outputs:
+      windows_sha256: ${{ steps.checksums.outputs.windows_sha256 }}
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: unsigned
+          path: dist
+
       - name: Check signing config
-        id: signing
         env:
           SM_HOST: ${{ vars.SM_HOST }}
           SM_KEYPAIR_ALIAS: ${{ vars.SM_KEYPAIR_ALIAS }}
@@ -106,17 +124,11 @@ jobs:
           for v in SM_HOST SM_KEYPAIR_ALIAS SM_CLIENT_CERT_FILE_B64 SM_API_KEY SM_CLIENT_CERT_PASSWORD; do
             [ -n "${!v}" ] || missing+=("$v")
           done
-          if [ "${#missing[@]}" -eq 5 ]; then
-            echo "::warning::Authenticode signing is not configured (environment 'signing'): keyto_windows_amd64.exe is NOT signed."
-            echo "enabled=false" >> "$GITHUB_OUTPUT"
-          elif [ "${#missing[@]}" -gt 0 ]; then
-            echo "::error::Signing is partly configured; missing: ${missing[*]}"; exit 1
-          else
-            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          if [ "${#missing[@]}" -gt 0 ]; then
+            echo "::error::Authenticode signing is not configured in environment 'signing'; missing: ${missing[*]}"; exit 1
           fi
 
       - name: Decode STM client certificate
-        if: steps.signing.outputs.enabled == 'true'
         env:
           SM_CLIENT_CERT_FILE_B64: ${{ secrets.SM_CLIENT_CERT_FILE_B64 }}
         run: |
@@ -128,7 +140,6 @@ jobs:
           mv dist/keyto_windows_amd64.exe dist-sign/
 
       - name: Sign Windows binary (DigiCert STM)
-        if: steps.signing.outputs.enabled == 'true'
         uses: digicert/code-signing-software-trust-action@fae23a455ba4bde62b64fd7cb2f81ade788f5a95 # v1.2.1
         with:
           simple-signing-mode: true
@@ -143,21 +154,19 @@ jobs:
           SM_CLIENT_CERT_FILE: ${{ env.SM_CLIENT_CERT_FILE }}
           SM_CLIENT_CERT_PASSWORD: ${{ secrets.SM_CLIENT_CERT_PASSWORD }}
 
+      - name: Remove signing material
+        if: always()
+        run: rm -f "${RUNNER_TEMP}/stm_client_cert.p12"
+
       - name: Verify Authenticode signature
-        if: steps.signing.outputs.enabled == 'true'
         run: |
           set -euo pipefail
-          rm -f "${RUNNER_TEMP}/stm_client_cert.p12"
           sudo apt-get update -qq && sudo apt-get install -y -qq osslsigncode
           osslsigncode verify \
             -CAfile /etc/ssl/certs/ca-certificates.crt \
             -TSA-CAfile /etc/ssl/certs/ca-certificates.crt \
             -in dist-sign/keyto_windows_amd64.exe
           mv dist-sign/keyto_windows_amd64.exe dist/
-
-      - name: Remove signing material
-        if: always()
-        run: rm -f "${RUNNER_TEMP}/stm_client_cert.p12"
 
       - name: Checksums
         id: checksums
@@ -177,7 +186,7 @@ jobs:
           retention-days: 1
 
   defender:
-    needs: build
+    needs: sign
     runs-on: ubuntu-latest
     timeout-minutes: 15   # starts after approval; bounds a stalled Defender call
     environment: release
@@ -210,7 +219,7 @@ jobs:
       - name: Allow Windows binary in Defender
         env:
           VERSION: ${{ github.ref_name }}
-          HASH: ${{ needs.build.outputs.windows_sha256 }}
+          HASH: ${{ needs.sign.outputs.windows_sha256 }}
           KEEP: ${{ vars.DEFENDER_KEEP || '5' }}
           RBAC_GROUPS: ${{ vars.DEFENDER_RBAC_GROUPS }}
         run: |
@@ -227,9 +236,9 @@ jobs:
         run: az logout || true
 
   publish:
-    # Default `needs` semantics: runs only if build and defender both
-    # succeeded, i.e. after the release was approved and allowed in Defender.
-    needs: [build, defender]
+    # Default `needs` semantics: runs only if sign and defender both
+    # succeeded, i.e. after both approvals and the Defender allow.
+    needs: [sign, defender]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -241,7 +250,7 @@ jobs:
 
       - name: Check published binary matches the allowed hash
         env:
-          HASH: ${{ needs.build.outputs.windows_sha256 }}
+          HASH: ${{ needs.sign.outputs.windows_sha256 }}
         run: |
           set -euo pipefail
           echo "$HASH  dist/keyto_windows_amd64.exe" | sha256sum -c -
