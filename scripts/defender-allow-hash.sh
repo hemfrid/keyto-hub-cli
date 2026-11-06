@@ -82,7 +82,8 @@ payload="$(jq -n \
 
 status="$(api POST /api/indicators -H 'Content-Type: application/json' --data "$payload")" || status="000"
 if [[ "$status" != 2* ]]; then
-  echo "::error::Defender rejected the indicator (HTTP $status): $(body_head 2000)"
+  # One line only: a newline in the body could otherwise start a workflow command.
+  echo "::error::Defender rejected the indicator (HTTP $status): $(body_head 2000 | tr '\r\n' '  ')"
   exit 1
 fi
 echo "Submitted Allowed indicator for keyto ${VERSION}: ${HASH} (scope: ${RBAC_GROUPS:-all devices})"
@@ -115,7 +116,7 @@ if [[ "$verified" != true ]]; then
     jq -r --arg h "$HASH" '
       [(.value // [])[]? | objects | select(((.indicatorValue // "") | strings | ascii_downcase) == $h)]
       | if length == 0 then "  (none)" else .[] | "  \(.id|@json) \(.action|@json) \(.indicatorType|@json) \(.indicatorValue|@json)" end' "$tmp/body" 2>/dev/null \
-      || echo "  (unparseable body: $(body_head 500))"
+      || echo "  (unparseable body, $(wc -c <"$tmp/body" | tr -d ' ') bytes; not printed: it may list other indicators)"
   fi
   exit 1
 fi
