@@ -71,18 +71,34 @@ if [[ "$status" != 2* ]]; then
   exit 1
 fi
 echo "Submitted Allowed indicator for keyto ${VERSION}: ${HASH} (scope: ${RBAC_GROUPS:-all devices})"
+# What Defender says it stored (non-secret fields only), for the log.
+jq -r '"POST response: id=\(.id // "?") action=\(.action // "?") type=\(.indicatorType // "?")"' "$tmp/body" 2>/dev/null || true
 
 # --- 2. Verify Defender returns it --------------------------------------------
-status="$(api GET /api/indicators -G --data-urlencode "\$filter=indicatorValue eq '${HASH}'")"
-if [[ "$status" != 2* ]]; then
-  echo "::error::Could not read back the indicator (HTTP $status): $(head -c 2000 "$tmp/body")"
+# The list API can lag a fresh POST, and it may name the action "Allowed" or
+# "Allow" (the portal shows "Allow"), so poll for a while and accept either.
+VERIFY_TRIES="${VERIFY_TRIES:-12}"
+VERIFY_DELAY="${VERIFY_DELAY:-10}"
+verified=false
+for ((try = 1; try <= VERIFY_TRIES; try++)); do
+  status="$(api GET /api/indicators -G --data-urlencode "\$filter=indicatorValue eq '${HASH}'")" || status="000"
+  if [[ "$status" == 2* ]] && jq -e --arg h "$HASH" \
+      'any(.value[]; ((.indicatorValue // "") | ascii_downcase) == $h and ((.action // "") | ascii_downcase | IN("allowed", "allow")))' \
+      "$tmp/body" >/dev/null 2>&1; then
+    verified=true
+    break
+  fi
+  echo "Not listed as Allowed yet (attempt ${try}/${VERIFY_TRIES}, HTTP ${status})"
+  if (( try < VERIFY_TRIES )); then sleep "$VERIFY_DELAY"; fi
+done
+if [[ "$verified" != true ]]; then
+  echo "::error::Defender has no Allowed indicator for ${HASH} after submitting it (HTTP ${status})"
+  echo "Last read-back for this hash (id, action, type, value):"
+  jq -r '.value[]? | "  \(.id) \(.action) \(.indicatorType) \(.indicatorValue)"' "$tmp/body" 2>/dev/null \
+    || echo "  (unparseable body: $(head -c 500 "$tmp/body"))"
   exit 1
 fi
-if ! jq -e --arg h "$HASH" 'any(.value[]; (.indicatorValue | ascii_downcase) == $h and .action == "Allowed")' "$tmp/body" >/dev/null; then
-  echo "::error::Defender has no Allowed indicator for ${HASH} after submitting it"
-  exit 1
-fi
-echo "Verified: Defender lists ${HASH} as Allowed."
+echo "Verified: Defender lists ${HASH} as Allowed (attempt ${try})."
 
 # --- 3. Prune this workflow's indicators for older releases -------------------
 status="$(api GET /api/indicators -G \
