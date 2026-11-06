@@ -48,10 +48,17 @@ trap 'rm -rf "$tmp"' EXIT
 # api METHOD PATH [curl args...] -> prints HTTP status; body in $tmp/body
 api() {
   local method="$1" path="$2"; shift 2
+  # A transport failure writes no body; don't let a previous call's body stand in.
+  rm -f "$tmp/body"
   curl -sS --connect-timeout 10 --max-time 30 -o "$tmp/body" -w '%{http_code}' -X "$method" \
     -H "Authorization: Bearer ${DEFENDER_TOKEN}" \
     -H 'Accept: application/json' \
     "$@" "${DEFENDER_API}${path}"
+}
+
+# body_head BYTES -> the first BYTES of the last response body, or a placeholder
+body_head() {
+  if [[ -s "$tmp/body" ]]; then head -c "$1" "$tmp/body"; else printf '(no response body)'; fi
 }
 
 # --- 1. Submit (or update) the indicator --------------------------------------
@@ -73,14 +80,14 @@ payload="$(jq -n \
    }
    + (if $groups == "" then {} else {rbacGroupNames: ($groups | split(",") | map(gsub("^\\s+|\\s+$"; "")) | map(select(. != "")))} end)')"
 
-status="$(api POST /api/indicators -H 'Content-Type: application/json' --data "$payload")"
+status="$(api POST /api/indicators -H 'Content-Type: application/json' --data "$payload")" || status="000"
 if [[ "$status" != 2* ]]; then
-  echo "::error::Defender rejected the indicator (HTTP $status): $(head -c 2000 "$tmp/body")"
+  echo "::error::Defender rejected the indicator (HTTP $status): $(body_head 2000)"
   exit 1
 fi
 echo "Submitted Allowed indicator for keyto ${VERSION}: ${HASH} (scope: ${RBAC_GROUPS:-all devices})"
 # What Defender says it stored (non-secret fields only), for the log.
-jq -r '"POST response: id=\(.id // "?") action=\(.action // "?") type=\(.indicatorType // "?")"' "$tmp/body" 2>/dev/null || true
+jq -r '"POST response: id=\(.id|@json) action=\(.action|@json) type=\(.indicatorType|@json)"' "$tmp/body" 2>/dev/null || true
 
 # --- 2. Verify Defender returns it --------------------------------------------
 # The list API can lag a fresh POST, and it may name the action "Allowed" or
@@ -89,7 +96,7 @@ verified=false
 for ((try = 1; try <= VERIFY_TRIES; try++)); do
   status="$(api GET /api/indicators -G --data-urlencode "\$filter=indicatorValue eq '${HASH}'")" || status="000"
   if [[ "$status" == 2* ]] && jq -e --arg h "$HASH" \
-      "$JQ_IS_ALLOW"' any(.value[]; ((.indicatorValue // "") | ascii_downcase) == $h and isAllow)' \
+      "$JQ_IS_ALLOW"' any(.value[]; ((.indicatorValue // "") | ascii_downcase) == $h and .indicatorType == "FileSha256" and isAllow)' \
       "$tmp/body" >/dev/null 2>&1; then
     verified=true
     break
@@ -100,8 +107,16 @@ done
 if [[ "$verified" != true ]]; then
   echo "::error::Defender has no Allowed indicator for ${HASH} after submitting it (HTTP ${status})"
   echo "Last read-back for this hash (id, action, type, value):"
-  jq -r 'if ((.value // []) | length) == 0 then "  (none)" else .value[] | "  \(.id|@json) \(.action|@json) \(.indicatorType|@json) \(.indicatorValue|@json)" end' "$tmp/body" 2>/dev/null \
-    || echo "  (unparseable body: $(head -c 500 "$tmp/body"))"
+  # Only this hash: if the server ignored $filter, the body could list every
+  # indicator in the tenant, and this log is public.
+  if [[ ! -s "$tmp/body" ]]; then
+    echo "  (no response body)"
+  else
+    jq -r --arg h "$HASH" '
+      [(.value // [])[]? | objects | select(((.indicatorValue // "") | strings | ascii_downcase) == $h)]
+      | if length == 0 then "  (none)" else .[] | "  \(.id|@json) \(.action|@json) \(.indicatorType|@json) \(.indicatorValue|@json)" end' "$tmp/body" 2>/dev/null \
+      || echo "  (unparseable body: $(body_head 500))"
+  fi
   exit 1
 fi
 echo "Verified: Defender lists ${HASH} as Allowed (attempt ${try})."
