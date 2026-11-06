@@ -153,3 +153,62 @@ func TestBootDeps_InstallGetsTheScopeOnlyAsAFlag(t *testing.T) {
 		t.Fatalf("npmrc =\n%s\nwant\n%s", got, wantNpmrc)
 	}
 }
+
+// TestBootDeps_SymlinkedHomeNpmrc_HandAddedLine_InstallGetsTheScope: a
+// dotfile manager made ~/.npmrc a link, and the user added the lane's auth
+// line to the real file by hand, as the tip says. keyto reads it through the
+// link, writes nothing, and the npm run still gets the scope flag.
+func TestBootDeps_SymlinkedHomeNpmrc_HandAddedLine_InstallGetsTheScope(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the fake npm is a shell script, and a symlink needs Developer Mode on Windows")
+	}
+	srv := laneHub(t)
+	t.Setenv("KEYTO_HOME", t.TempDir())
+	if err := config.Save(&config.Creds{Credential: "kt_stored", HubURL: srv.URL, ExpiresAt: time.Now().Add(time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+	host := strings.TrimPrefix(srv.URL, "http://")
+
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("npm_config_userconfig", "")
+	t.Setenv("NPM_CONFIG_USERCONFIG", "")
+	target := filepath.Join(t.TempDir(), "dotfiles-npmrc")
+	content := "@hemfrid:registry=https://npm.pkg.github.com\n//" + host + "/api/npm/:_authToken=kt_stored\n"
+	if err := os.WriteFile(target, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(home, ".npmrc")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+
+	bin := t.TempDir()
+	argsOut := filepath.Join(t.TempDir(), "npm-args")
+	fakeNpm := "#!/bin/sh\nprintf '%s\\n' \"$@\" > '" + argsOut + "'\n"
+	if err := os.WriteFile(filepath.Join(bin, "npm"), []byte(fakeNpm), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	d := bootDeps(context.Background(), t.TempDir(), boot.Flags{}, nil)
+	if err := d.NpmLane(context.Background()); err != nil {
+		t.Fatalf("NpmLane: %v", err)
+	}
+	if err := d.Install(context.Background()); err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+	args, err := os.ReadFile(argsOut)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "install\n--@hemfrid:registry=" + srv.URL + "/api/npm/\n"; string(args) != want {
+		t.Fatalf("npm args =\n%s\nwant\n%s", args, want)
+	}
+	if got, _ := os.ReadFile(target); string(got) != content {
+		t.Fatalf("the link target was modified:\n%s", got)
+	}
+	if info, err := os.Lstat(link); err != nil || info.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("~/.npmrc must stay a link (err %v)", err)
+	}
+}

@@ -7,9 +7,9 @@
 // between a begin and an end marker so later runs can find and rewrite it (a
 // rotated credential). That line only tells npm which token to send to the
 // Hub's /api/npm/ prefix; it changes no registry, so no other repo on the
-// machine resolves anything differently. Which packages go to the Hub is the
-// project's choice (its own .npmrc scope line), and `keyto start` passes the
-// scope to its own npm install as a command-line flag (ScopeFlag).
+// machine resolves anything differently. The project's .npmrc maps no scope
+// either (CI installs the same packages from GitHub Packages), so `keyto start`
+// passes the scope to its own npm install as a command-line flag (ScopeFlag).
 //
 // v0.9.x before this wrote a user-wide `@hemfrid:registry=<hub>/api/npm/` line
 // inside the same markers. That sent every @hemfrid package on the laptop to a
@@ -17,8 +17,10 @@
 // inside keyto's markers, even when it can't write the credential. Every line
 // outside the markers stays byte-for-byte as it was. The file holds a token, so
 // it is written through internal/safefile: a 0600 temp file renamed into
-// place, and a symlinked ~/.npmrc is refused, never written through. The token
-// is never printed.
+// place, and a symlinked ~/.npmrc is never written through. keyto only reads
+// through such a link, to see whether the user has added the auth line to the
+// file it points at themselves (then the lane is in place all the same). The
+// token is never printed.
 package npmrc
 
 import (
@@ -27,6 +29,7 @@ import (
 	"fmt"
 	"io"
 	"net/url"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -154,8 +157,13 @@ func credsLines(c *config.Creds) (laneLines, error) {
 // It returns the lane's registry URL when the credential line is in place
 // (the caller passes it to npm with ScopeFlag), else "".
 //
+// A symlinked d.Path is never written; when the file it points at already
+// sets the lane's auth key (added by hand, as the tip says), the registry is
+// returned all the same, else "" with the tip.
+//
 // The error is a tip for the user, never fatal to `keyto start`: no
-// credential, a symlinked or unreadable file, or a block with no end marker.
+// credential, a symlinked file without the auth line, an unreadable file, or
+// a block with no end marker.
 // A Hub that doesn't serve the lane is reported on d.Out and returns "", nil.
 func Ensure(ctx context.Context, d Deps) (string, error) {
 	lines, credsErr := credsLines(d.Creds)
@@ -167,8 +175,7 @@ func Ensure(ctx context.Context, d Deps) (string, error) {
 		}
 		switch {
 		case errors.Is(err, safefile.ErrSymlink):
-			return "", fmt.Errorf("%s is a symlink, and keyto never writes through one. To use the Hub package lane, add this line to the file it points at yourself:\n%s",
-				d.Path, lines.handWritten())
+			return linkedLane(d, lines)
 		case errors.Is(err, safefile.ErrNotRegular):
 			return "", fmt.Errorf("%s is not a regular file, so keyto left it alone. To use the Hub package lane, add this line to your npm user config yourself:\n%s",
 				d.Path, lines.handWritten())
@@ -213,6 +220,45 @@ func Ensure(ctx context.Context, d Deps) (string, error) {
 	noteRemoved(d, removed)
 	noteShadowed(d, shadowed)
 	return lines.registry, nil
+}
+
+// linkedLane is Ensure for a symlinked user config, which keyto never writes
+// through. It reads through the link, read-only: when the file the link points
+// at sets the lane's auth key, the lane is in place and its registry is
+// returned, so `keyto start` still passes the scope flag. Otherwise the error
+// is the tip with the line to add by hand.
+func linkedLane(d Deps, l laneLines) (string, error) {
+	if value, ok := authThroughLink(d.Path, l.authKey); ok {
+		fmt.Fprintf(d.Out, "  %s is a symlink, so keyto left it alone; the file it points at already sends a token to %s\n", d.Path, l.registry)
+		if value != l.token {
+			fmt.Fprintf(d.Out, "  note: that token isn't your current keyto credential; if npm gets a 401 from the Hub, replace it with:\n%s\n", l.handWritten())
+		}
+		return l.registry, nil
+	}
+	return "", fmt.Errorf("%s is a symlink, and keyto never writes through one. To use the Hub package lane, add this line to the file it points at yourself (keyto start reads it through the link):\n%s",
+		d.Path, l.handWritten())
+}
+
+// authThroughLink returns the value npm would use for authKey in the file
+// path links to (the last line setting it), and whether it is non-empty. Only
+// a regular file is read, so a link to a FIFO or a device can't block the read.
+func authThroughLink(path, authKey string) (string, bool) {
+	info, err := os.Stat(path)
+	if err != nil || !info.Mode().IsRegular() {
+		return "", false
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", false
+	}
+	value := ""
+	for _, line := range splitLines(string(data)) {
+		if lineKey(line) == authKey {
+			_, v, _ := strings.Cut(line, "=")
+			value = strings.TrimSpace(v)
+		}
+	}
+	return value, value != ""
 }
 
 // cleanUp writes content when dropLegacyScope removed something, and says so.
