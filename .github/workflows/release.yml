@@ -96,6 +96,7 @@ jobs:
   defender:
     needs: build
     runs-on: ubuntu-latest
+    timeout-minutes: 15   # starts after approval; bounds a stalled Defender call
     environment: release
     permissions:
       contents: read
