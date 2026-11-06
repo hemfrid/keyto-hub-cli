@@ -5,12 +5,26 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
 	"github.com/hemfrid/keyto-hub-cli/internal/envsync"
 	"github.com/hemfrid/keyto-hub-cli/internal/project"
 )
+
+// symlinkOrSkip makes newname a link to oldname. It skips the test on
+// Windows, where creating a link needs Developer Mode or admin rights (CI runs
+// on Linux only).
+func symlinkOrSkip(t *testing.T, oldname, newname string) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("creating a symlink needs Developer Mode or admin rights on Windows")
+	}
+	if err := os.Symlink(oldname, newname); err != nil {
+		t.Fatal(err)
+	}
+}
 
 // A cloned repo is untrusted: it can ship .env or .dev.vars as a symlink to
 // any file the user can write (~/.ssh/authorized_keys, a shell rc). env sync
@@ -61,9 +75,7 @@ func assertNoTempFiles(t *testing.T, dir string) {
 func TestSafeWrite_SymlinkedDotEnv_Refused(t *testing.T) {
 	dir := makeNextJSDir(t)
 	victim := plantVictim(t)
-	if err := os.Symlink(victim, filepath.Join(dir, ".env")); err != nil {
-		t.Fatal(err)
-	}
+	symlinkOrSkip(t, victim, filepath.Join(dir, ".env"))
 	d := baseDeps(t, dir)
 	d.Fetch = staticFetch(map[string]string{"SENDGRID_API_KEY": "sg_secret"}, nil)
 
@@ -78,9 +90,7 @@ func TestSafeWrite_SymlinkedDotEnv_Refused(t *testing.T) {
 func TestSafeWrite_SymlinkedDevVars_Refused(t *testing.T) {
 	dir := makeWorkersDir(t, workersEnvironments)
 	victim := plantVictim(t)
-	if err := os.Symlink(victim, filepath.Join(dir, ".dev.vars")); err != nil {
-		t.Fatal(err)
-	}
+	symlinkOrSkip(t, victim, filepath.Join(dir, ".dev.vars"))
 	d := baseDeps(t, dir)
 	d.Fetch = staticFetch(map[string]string{"OPENAI_API_KEY": "sk-secret"}, nil)
 
@@ -100,9 +110,7 @@ func TestSafeWrite_SymlinkedDevVarsWithOverridesMarker_NotRead(t *testing.T) {
 	if err := os.WriteFile(victim, []byte("# local overrides below\nPRIVATE=1\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Symlink(victim, filepath.Join(dir, ".dev.vars")); err != nil {
-		t.Fatal(err)
-	}
+	symlinkOrSkip(t, victim, filepath.Join(dir, ".dev.vars"))
 	out := &bytes.Buffer{}
 	d := baseDeps(t, dir)
 	d.Out = out
@@ -285,9 +293,7 @@ func TestBackup_SymlinkedBackupPath_Refused(t *testing.T) {
 		t.Fatal(err)
 	}
 	victim := plantVictim(t)
-	if err := os.Symlink(victim, path+".keyto-backup"); err != nil {
-		t.Fatal(err)
-	}
+	symlinkOrSkip(t, victim, path+".keyto-backup")
 	err := envsync.Run(context.Background(), nil, baseDeps(t, dir))
 	if err == nil || !strings.Contains(err.Error(), ".keyto-backup") || !strings.Contains(err.Error(), "symlink") {
 		t.Fatalf("want a symlink refusal naming the backup, got %v", err)
@@ -316,9 +322,7 @@ func TestSafeWrite_RemovesStaleTempFilesOnly(t *testing.T) {
 	}
 	victim := plantVictim(t)
 	link := filepath.Join(dir, "..dev.vars.keyto-tmp-fedcba9876543210")
-	if err := os.Symlink(victim, link); err != nil {
-		t.Fatal(err)
-	}
+	symlinkOrSkip(t, victim, link)
 
 	if err := envsync.Run(context.Background(), nil, baseDeps(t, dir)); err != nil {
 		t.Fatalf("Run: %v", err)

@@ -112,10 +112,13 @@ The everyday loop is **`keyto checkout <project>` → `keyto start`**:
 >
 > That line only says which token npm sends to the Hub's `/api/npm/`; it maps
 > no registry, so other repos' `@hemfrid` packages (GitHub Packages) resolve
-> exactly as before. Which packages come from the Hub is the project's choice:
-> the `npm install` that `keyto start` runs gets
-> `--@hemfrid:registry=<hub>/api/npm/` on its own command line, and a
-> hand-run `npm ci` needs the project's `.npmrc` to map `@hemfrid` to the Hub.
+> exactly as before. The project's own `.npmrc` maps no `@hemfrid` scope either
+> (on purpose: CI installs the same packages from GitHub Packages). So
+> `keyto start` passes the scope itself: the `npm install` it runs gets
+> `--@hemfrid:registry=<hub>/api/npm/` on its own command line. A hand-run
+> `npm ci` needs that flag too (for example
+> `npm ci --@hemfrid:registry=https://hub.keytolabs.com/api/npm/`), or your own
+> `@hemfrid:registry=` line pointing at the Hub.
 > v0.9.x wrote a user-wide `@hemfrid:registry=` line inside the same markers;
 > `keyto start` removes it (that line only, even when you're signed out).
 >
@@ -126,7 +129,9 @@ The everyday loop is **`keyto checkout <project>` → `keyto start`**:
 > credential when the Hub doesn't serve the lane yet (it asks first, without
 > your credential), when you aren't signed in (it prints a tip and the boot
 > carries on), or when `~/.npmrc` is a symlink (it prints the line to add to
-> the real file yourself). Next.js repos never touch `~/.npmrc`.
+> the real file yourself). Once you've added it, `keyto start` reads it through
+> the link, never writing to it, and passes the scope flag as usual. Next.js
+> repos never touch `~/.npmrc`.
 
 Then edit locally (with Claude Code, your editor, whatever) and `git push` — it
 flows through the Keyto Hub to GitHub.

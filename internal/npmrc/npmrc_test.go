@@ -5,6 +5,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -12,6 +13,19 @@ import (
 	"github.com/hemfrid/keyto-hub-cli/internal/config"
 	"github.com/hemfrid/keyto-hub-cli/internal/npmrc"
 )
+
+// symlinkOrSkip makes newname a link to oldname. It skips the test on
+// Windows, where creating a link needs Developer Mode or admin rights (CI runs
+// on Linux only).
+func symlinkOrSkip(t *testing.T, oldname, newname string) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("creating a symlink needs Developer Mode or admin rights on Windows")
+	}
+	if err := os.Symlink(oldname, newname); err != nil {
+		t.Fatal(err)
+	}
+}
 
 const (
 	hubURL   = "https://hub.example.com"
@@ -196,9 +210,7 @@ func TestEnsure_SymlinkedNpmrc_Refused(t *testing.T) {
 	const targetContent = "@acme:registry=https://npm.acme.dev/\n"
 	write(t, target, targetContent, 0o644)
 	path := filepath.Join(dir, ".npmrc")
-	if err := os.Symlink(target, path); err != nil {
-		t.Fatal(err)
-	}
+	symlinkOrSkip(t, target, path)
 
 	out, probe := &bytes.Buffer{}, &probeRec{}
 	registry, err := npmrc.Ensure(context.Background(), deps(t, path, tokenOne, out, probe))
@@ -225,6 +237,115 @@ func TestEnsure_SymlinkedNpmrc_Refused(t *testing.T) {
 	}
 	if probe.calls != 0 {
 		t.Fatalf("probe calls = %d, want 0", probe.calls)
+	}
+}
+
+// symlinkedNpmrc makes <HOME>/.npmrc, in a temp HOME, a link to a dotfiles
+// file holding content, and returns the link's and the target's paths.
+func symlinkedNpmrc(t *testing.T, content string) (path, target string) {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	target = filepath.Join(t.TempDir(), "dotfiles-npmrc")
+	write(t, target, content, 0o644)
+	path = filepath.Join(home, ".npmrc")
+	symlinkOrSkip(t, target, path)
+	return path, target
+}
+
+// assertLinkUntouched checks that the link is still a link and its target
+// still holds want byte for byte.
+func assertLinkUntouched(t *testing.T, path, target, want string) {
+	t.Helper()
+	if got := read(t, target); got != want {
+		t.Fatalf("the link target was modified:\n%q\nwant\n%q", got, want)
+	}
+	if info, err := os.Lstat(path); err != nil || info.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("the link itself must stay (err %v)", err)
+	}
+}
+
+func TestEnsure_SymlinkedNpmrc_HandAddedAuthLine_LaneInPlace(t *testing.T) {
+	content := usersOwnScope + "//hub.example.com/api/npm/:_authToken=" + tokenOne + "\n"
+	path, target := symlinkedNpmrc(t, content)
+
+	out, probe := &bytes.Buffer{}, &probeRec{}
+	registry := ensure(t, deps(t, path, tokenOne, out, probe))
+	if registry != laneRegistry {
+		t.Fatalf("registry = %q, want %q (the auth line is there, read through the link)", registry, laneRegistry)
+	}
+	assertLinkUntouched(t, path, target, content)
+	if !strings.Contains(out.String(), "symlink") || strings.Contains(out.String(), "note:") {
+		t.Fatalf("want a plain 'left it alone' line, got %q", out.String())
+	}
+	assertNoToken(t, out.String())
+	if probe.calls != 0 {
+		t.Fatalf("probe calls = %d, want 0", probe.calls)
+	}
+}
+
+func TestEnsure_SymlinkedNpmrc_HandAddedStaleToken_LaneInPlaceWithNote(t *testing.T) {
+	content := "//hub.example.com/api/npm/:_authToken=" + tokenTwo + "\n"
+	path, target := symlinkedNpmrc(t, content)
+
+	out := &bytes.Buffer{}
+	registry := ensure(t, deps(t, path, tokenOne, out, &probeRec{}))
+	if registry != laneRegistry {
+		t.Fatalf("registry = %q, want %q", registry, laneRegistry)
+	}
+	assertLinkUntouched(t, path, target, content)
+	if !strings.Contains(out.String(), "isn't your current keyto credential") ||
+		!strings.Contains(out.String(), "//hub.example.com/api/npm/:_authToken=") {
+		t.Fatalf("want a note with the line to put back, got %q", out.String())
+	}
+	assertNoToken(t, out.String())
+}
+
+func TestEnsure_SymlinkedNpmrc_LastAuthLineWins(t *testing.T) {
+	// npm takes the last value of a key, so a later empty line unsets it.
+	content := "//hub.example.com/api/npm/:_authToken=" + tokenOne + "\n" +
+		"//hub.example.com/api/npm/:_authToken=\n"
+	path, target := symlinkedNpmrc(t, content)
+
+	registry, err := npmrc.Ensure(context.Background(), deps(t, path, tokenOne, &bytes.Buffer{}, &probeRec{}))
+	if err == nil || !strings.Contains(err.Error(), "symlink") || registry != "" {
+		t.Fatalf("want the symlink tip and no registry, got %q, %v", registry, err)
+	}
+	assertLinkUntouched(t, path, target, content)
+}
+
+func TestEnsure_SymlinkedNpmrc_OtherHostsAuthLineDoesNotCount(t *testing.T) {
+	path, target := symlinkedNpmrc(t, usersOwnScope)
+
+	registry, err := npmrc.Ensure(context.Background(), deps(t, path, tokenOne, &bytes.Buffer{}, &probeRec{}))
+	if err == nil || !strings.Contains(err.Error(), "//hub.example.com/api/npm/:_authToken=") || registry != "" {
+		t.Fatalf("want the tip with the line to add and no registry, got %q, %v", registry, err)
+	}
+	assertLinkUntouched(t, path, target, usersOwnScope)
+}
+
+func TestEnsure_SymlinkedNpmrc_DanglingLink_Tip(t *testing.T) {
+	path, target := symlinkedNpmrc(t, "")
+	if err := os.Remove(target); err != nil {
+		t.Fatal(err)
+	}
+
+	registry, err := npmrc.Ensure(context.Background(), deps(t, path, tokenOne, &bytes.Buffer{}, &probeRec{}))
+	if err == nil || !strings.Contains(err.Error(), "symlink") || registry != "" {
+		t.Fatalf("want the symlink tip and no registry, got %q, %v", registry, err)
+	}
+	if _, statErr := os.Lstat(target); !os.IsNotExist(statErr) {
+		t.Fatalf("keyto must not create the link's target (err %v)", statErr)
+	}
+}
+
+func TestEnsure_SymlinkedNpmrc_ToADirectory_Tip(t *testing.T) {
+	path := filepath.Join(t.TempDir(), ".npmrc")
+	symlinkOrSkip(t, t.TempDir(), path)
+
+	registry, err := npmrc.Ensure(context.Background(), deps(t, path, tokenOne, &bytes.Buffer{}, &probeRec{}))
+	if err == nil || !strings.Contains(err.Error(), "symlink") || registry != "" {
+		t.Fatalf("want the symlink tip and no registry, got %q, %v", registry, err)
 	}
 }
 

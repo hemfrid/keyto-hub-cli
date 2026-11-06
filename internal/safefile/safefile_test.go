@@ -4,11 +4,25 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
 	"github.com/hemfrid/keyto-hub-cli/internal/safefile"
 )
+
+// symlinkOrSkip makes newname a link to oldname. It skips the test on
+// Windows, where creating a link needs Developer Mode or admin rights (CI runs
+// on Linux only).
+func symlinkOrSkip(t *testing.T, oldname, newname string) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("creating a symlink needs Developer Mode or admin rights on Windows")
+	}
+	if err := os.Symlink(oldname, newname); err != nil {
+		t.Fatal(err)
+	}
+}
 
 const victimContent = "ssh-ed25519 AAAA victim@laptop\n"
 
@@ -88,9 +102,7 @@ func TestWrite_SymlinkRefused(t *testing.T) {
 	dir := t.TempDir()
 	victim := plantVictim(t)
 	path := filepath.Join(dir, ".npmrc")
-	if err := os.Symlink(victim, path); err != nil {
-		t.Fatal(err)
-	}
+	symlinkOrSkip(t, victim, path)
 	err := safefile.Write(path, []byte("token=x\n"), 0o600)
 	if !errors.Is(err, safefile.ErrSymlink) || !strings.Contains(err.Error(), path) || !strings.Contains(err.Error(), "symlink") {
 		t.Fatalf("want an ErrSymlink refusal naming %s, got %v", path, err)
@@ -127,9 +139,7 @@ func TestReadRegular(t *testing.T) {
 		t.Fatalf("regular: %q ok=%v err=%v", data, ok, err)
 	}
 	link := filepath.Join(dir, "link")
-	if err := os.Symlink(plantVictim(t), link); err != nil {
-		t.Fatal(err)
-	}
+	symlinkOrSkip(t, plantVictim(t), link)
 	if data, _, err := safefile.ReadRegular(link); !errors.Is(err, safefile.ErrSymlink) || len(data) != 0 {
 		t.Fatalf("symlink: want ErrSymlink and no data, got %q, %v", data, err)
 	}
