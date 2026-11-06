@@ -33,6 +33,14 @@ TITLE_PREFIX="keyto v"
 [[ "$HASH" =~ ^[0-9a-f]{64}$ ]] || { echo "::error::HASH is not a lowercase sha256: '$HASH'"; exit 1; }
 [[ "$VERSION" =~ ^v[0-9] ]] || { echo "::error::VERSION must look like v1.2.3: '$VERSION'"; exit 1; }
 [[ "$KEEP" =~ ^[1-9][0-9]*$ ]] || { echo "::error::KEEP must be a positive integer: '$KEEP'"; exit 1; }
+VERIFY_TRIES="${VERIFY_TRIES:-12}"
+VERIFY_DELAY="${VERIFY_DELAY:-10}"
+[[ "$VERIFY_TRIES" =~ ^[1-9][0-9]*$ ]] || { echo "::error::VERIFY_TRIES must be a positive integer: '$VERIFY_TRIES'"; exit 1; }
+[[ "$VERIFY_DELAY" =~ ^[0-9]+$ ]] || { echo "::error::VERIFY_DELAY must be a non-negative integer: '$VERIFY_DELAY'"; exit 1; }
+
+# An allow indicator. The API documents "Allowed"; the portal shows "Allow".
+# Shared by the read-back check and prune so both treat the action the same way.
+JQ_IS_ALLOW='def isAllow: ((.action // "") | ascii_downcase | IN("allowed", "allow"));'
 
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
@@ -40,7 +48,7 @@ trap 'rm -rf "$tmp"' EXIT
 # api METHOD PATH [curl args...] -> prints HTTP status; body in $tmp/body
 api() {
   local method="$1" path="$2"; shift 2
-  curl -sS -o "$tmp/body" -w '%{http_code}' -X "$method" \
+  curl -sS --connect-timeout 10 --max-time 30 -o "$tmp/body" -w '%{http_code}' -X "$method" \
     -H "Authorization: Bearer ${DEFENDER_TOKEN}" \
     -H 'Accept: application/json' \
     "$@" "${DEFENDER_API}${path}"
@@ -71,18 +79,33 @@ if [[ "$status" != 2* ]]; then
   exit 1
 fi
 echo "Submitted Allowed indicator for keyto ${VERSION}: ${HASH} (scope: ${RBAC_GROUPS:-all devices})"
+# What Defender says it stored (non-secret fields only), for the log.
+jq -r '"POST response: id=\(.id // "?") action=\(.action // "?") type=\(.indicatorType // "?")"' "$tmp/body" 2>/dev/null || true
 
 # --- 2. Verify Defender returns it --------------------------------------------
-status="$(api GET /api/indicators -G --data-urlencode "\$filter=indicatorValue eq '${HASH}'")"
-if [[ "$status" != 2* ]]; then
-  echo "::error::Could not read back the indicator (HTTP $status): $(head -c 2000 "$tmp/body")"
+# The list API can lag a fresh POST, and it may name the action "Allowed" or
+# "Allow" (the portal shows "Allow"), so poll for a while and accept either.
+verified=false
+for ((try = 1; try <= VERIFY_TRIES; try++)); do
+  status="$(api GET /api/indicators -G --data-urlencode "\$filter=indicatorValue eq '${HASH}'")" || status="000"
+  if [[ "$status" == 2* ]] && jq -e --arg h "$HASH" \
+      "$JQ_IS_ALLOW"' any(.value[]; ((.indicatorValue // "") | ascii_downcase) == $h and isAllow)' \
+      "$tmp/body" >/dev/null 2>&1; then
+    verified=true
+    break
+  fi
+  echo "Not listed as Allowed yet (attempt ${try}/${VERIFY_TRIES}, HTTP ${status})"
+  if (( try < VERIFY_TRIES )); then sleep "$VERIFY_DELAY"; fi
+done
+if [[ "$verified" != true ]]; then
+  echo "::error::Defender has no Allowed indicator for ${HASH} after submitting it (HTTP ${status})"
+  echo "Last read-back for this hash (id, action, type, value):"
+  jq -r 'if ((.value // []) | length) == 0 then "  (none)" else .value[] | "  \(.id|@json) \(.action|@json) \(.indicatorType|@json) \(.indicatorValue|@json)" end' "$tmp/body" 2>/dev/null \
+    || echo "  (unparseable body: $(head -c 500 "$tmp/body"))"
   exit 1
 fi
-if ! jq -e --arg h "$HASH" 'any(.value[]; (.indicatorValue | ascii_downcase) == $h and .action == "Allowed")' "$tmp/body" >/dev/null; then
-  echo "::error::Defender has no Allowed indicator for ${HASH} after submitting it"
-  exit 1
-fi
-echo "Verified: Defender lists ${HASH} as Allowed."
+echo "Verified: Defender lists ${HASH} as Allowed (attempt ${try})."
+jq -r --arg h "$HASH" '.value[] | select(((.indicatorValue // "") | ascii_downcase) == $h) | "Read-back: id=\(.id|@json) action=\(.action|@json)"' "$tmp/body" 2>/dev/null || true
 
 # --- 3. Prune this workflow's indicators for older releases -------------------
 status="$(api GET /api/indicators -G \
@@ -98,9 +121,9 @@ fi
 # tenant, so re-check application, action and type here. @tsv escapes tabs and
 # newlines inside fields, and an empty id becomes "(none)" so read can't shift
 # columns (consecutive tabs collapse in IFS).
-if ! jq -r --arg p "$TITLE_PREFIX" --arg h "$HASH" --arg app "$APP_NAME" '
+if ! jq -r --arg p "$TITLE_PREFIX" --arg h "$HASH" --arg app "$APP_NAME" "$JQ_IS_ALLOW"'
   .value[]
-  | select(.application == $app and .action == "Allowed" and .indicatorType == "FileSha256")
+  | select(.application == $app and isAllow and .indicatorType == "FileSha256")
   | select((.title | type) == "string" and (.title | startswith($p)))
   | select((.indicatorValue // "" | ascii_downcase) != $h)
   | [(.title | ltrimstr("keyto ")),
