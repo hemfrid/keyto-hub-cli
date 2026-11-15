@@ -204,3 +204,20 @@ func validSGR(params string) bool {
 func StatusLine(code int) string {
 	return strings.TrimSpace(fmt.Sprintf("%d %s", code, http.StatusText(code)))
 }
+
+// Text is multi-line text (an error message, a tool's output) made safe to
+// print: each line is sanitized on its own, so the lines and their
+// indentation stay. Carriage returns are read as a terminal reads them: one at
+// the end of a line ("\r\n") is dropped, and one inside a line (a progress
+// update) starts the line over, so only the text after the last one stays.
+func Text(s string) string {
+	lines := strings.Split(s, "\n")
+	for i, line := range lines {
+		line = strings.TrimRight(line, "\r")
+		if cr := strings.LastIndexByte(line, '\r'); cr >= 0 {
+			line = line[cr+1:]
+		}
+		lines[i] = Sanitize(line, false)
+	}
+	return strings.Join(lines, "\n")
+}

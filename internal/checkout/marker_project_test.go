@@ -59,6 +59,8 @@ func TestRewire_RefusesAMarkerWhoseRepoIsNotOneOfTheUsersProjects(t *testing.T) 
 	markers := []*project.Marker{
 		marker("acme-web", "hemfrid", "payroll"),       // a repo the user is not a member of
 		marker("acme-web", "someone-else", "acme-web"), // another org
+		marker("acme-web", "hemfrid", "acme-web-fork"), // a repo whose name starts with a project's
+		marker("acme-web", "hemfrid", "acme"),          // a repo whose name a project's contains
 	}
 	for _, m := range markers {
 		for _, mode := range []struct{ name, arg, input string }{
@@ -229,6 +231,10 @@ func TestRewire_WhenTheProjectListCannotBeRead_NothingIsWired(t *testing.T) {
 		if !errors.Is(err, listErr) || !hub.IsUnauthorized(err) {
 			t.Errorf("arg %q: the Hub's 401 lost its type: %v", mode.arg, err)
 		}
+		// It is a sign-in problem, not an unreachable Hub: no "retry later" hint.
+		if strings.Contains(err.Error(), "needs the Hub reachable") {
+			t.Errorf("arg %q: a 401 got the unreachable-Hub hint: %v", mode.arg, err)
+		}
 	}
 }
 
@@ -319,5 +325,50 @@ func TestRewire_TheMarkerIsWrittenAfterTheWiring(t *testing.T) {
 	}
 	if strings.Join(order, ",") != "wire,write" {
 		t.Errorf("order = %v, want wire then write", order)
+	}
+}
+
+// A project list that fails with anything but a 401 (the Hub down, a 5xx, no
+// network) wires nothing, keeps the cause, and says what to do.
+func TestRewire_WhenTheHubCannotBeReached_ItSaysSoAndNothingIsWired(t *testing.T) {
+	for _, listErr := range []error{
+		&hub.StatusError{Op: "list-projects", StatusCode: 503},
+		errors.New("dial tcp: connection refused"),
+	} {
+		failing := func(ctx context.Context) ([]hub.Project, error) { return nil, listErr }
+		for _, mode := range []struct{ arg, input string }{{"acme-web", ""}, {"", "y\n"}} {
+			var r rewire
+			_, err := checkout.Run(context.Background(), mode.arg, r.deps(marker("acme-web", "hemfrid", "acme-web"), failing, mode.input))
+			if err == nil || len(r.wired) != 0 || len(r.written) != 0 {
+				t.Fatalf("%v, arg %q: want an error and nothing wired or written, got err=%v wired=%d written=%d", listErr, mode.arg, err, len(r.wired), len(r.written))
+			}
+			if !errors.Is(err, listErr) || hub.IsUnauthorized(err) {
+				t.Errorf("%v, arg %q: want the cause kept (and not a 401), got %v", listErr, mode.arg, err)
+			}
+			for _, want := range []string{"nothing was changed", "needs the Hub reachable"} {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("%v, arg %q: want %q in %q", listErr, mode.arg, want, err.Error())
+				}
+			}
+		}
+	}
+}
+
+// GitHub names are ASCII: only ASCII letters compare without case. Unicode
+// folding would match the Kelvin sign (U+212A) to "k".
+func TestRewire_OnlyASCIILettersCompareWithoutCase(t *testing.T) {
+	projects := []hub.Project{{Name: "keyto-web", Org: "hemfrid", Repo: "keyto-web", Role: "owner"}}
+	for _, tc := range []struct {
+		repo  string
+		wired bool
+	}{
+		{"KEYTO-Web", true},
+		{"\u212aeyto-web", false},
+	} {
+		var r rewire
+		_, err := checkout.Run(context.Background(), "keyto-web", r.deps(marker("keyto-web", "hemfrid", tc.repo), fakeList(projects), ""))
+		if got := err == nil && len(r.wired) == 1; got != tc.wired {
+			t.Errorf("marker repo %q: wired=%v (err %v), want %v", tc.repo, got, err, tc.wired)
+		}
 	}
 }

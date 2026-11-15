@@ -106,3 +106,18 @@ func TestStatusLine_IsBuiltFromTheCodeAlone(t *testing.T) {
 		}
 	}
 }
+
+func TestText_KeepsLinesAndShowsProgressAsATerminalWould(t *testing.T) {
+	for in, want := range map[string]string{
+		"plain":                "plain",
+		"one\ntwo\n  indented": "one\ntwo\n  indented",
+		"crlf\r\nnext":         "crlf\nnext",
+		"10%\r50%\r100% done":  "100% done",
+		"trailing cr\r":        "trailing cr",
+		"red \x1b[31mtext\x1b[0m\nOSC \x1b]52;c;eA==\x07x": "red text\nOSC x",
+	} {
+		if got := Text(in); got != want {
+			t.Errorf("Text(%q) = %q, want %q", in, got, want)
+		}
+	}
+}

@@ -3,7 +3,6 @@ package main
 import (
 	"fmt"
 	"io"
-	"strings"
 
 	"github.com/hemfrid/keyto-hub-cli/internal/termsafe"
 )
@@ -27,14 +26,5 @@ func signedInLine(prefix, name, email string) string {
 // (git's progress updates) starts the line over, so only the text after the
 // last one is kept.
 func printError(w io.Writer, err error) {
-	lines := strings.Split(err.Error(), "\n")
-	for i, line := range lines {
-		// A trailing "\r" is the first half of "\r\n", or a progress line's end.
-		line = strings.TrimRight(line, "\r")
-		if cr := strings.LastIndexByte(line, '\r'); cr >= 0 {
-			line = line[cr+1:]
-		}
-		lines[i] = sanitizeForTerminal(line, false)
-	}
-	fmt.Fprintln(w, "keyto:", strings.Join(lines, "\n"))
+	fmt.Fprintln(w, "keyto:", termsafe.Text(err.Error()))
 }

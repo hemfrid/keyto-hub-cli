@@ -110,6 +110,9 @@ func (s *session) runWithArg(ctx context.Context, name string) (string, error) {
 
 	projects, err := s.List(ctx)
 	if err != nil {
+		if m != nil {
+			return "", listErrorInPlace(err)
+		}
 		return "", err
 	}
 
@@ -165,7 +168,7 @@ func (s *session) runInteractive(ctx context.Context) (string, error) {
 		// prompt, so the prompt names the project as the Hub does.
 		projects, err := s.List(ctx)
 		if err != nil {
-			return "", err
+			return "", listErrorInPlace(err)
 		}
 		here, found := projectForMarker(projects, m)
 		if !found {
@@ -193,11 +196,44 @@ func (s *session) runInteractive(ctx context.Context) (string, error) {
 // without case). A marker that names any other repo matches nothing.
 func projectForMarker(projects []hub.Project, m *project.Marker) (hub.Project, bool) {
 	for _, p := range projects {
-		if strings.EqualFold(p.Org, m.Org) && strings.EqualFold(p.Repo, m.Repo) {
+		if asciiEqualFold(p.Org, m.Org) && asciiEqualFold(p.Repo, m.Repo) {
 			return p, true
 		}
 	}
 	return hub.Project{}, false
+}
+
+// listErrorInPlace is the error when the project list can't be read in a
+// folder that already has a marker. A 401 goes back as it is, so `keyto
+// checkout` signs in again. Anything else (the Hub down, a 5xx, no network)
+// keeps its cause and says that re-wiring in place needs the Hub.
+func listErrorInPlace(err error) error {
+	if hub.IsUnauthorized(err) {
+		return err
+	}
+	return fmt.Errorf("could not read your Hub projects, so nothing was changed; re-wiring in place needs the Hub reachable, retry when it is: %w", err)
+}
+
+// asciiEqualFold compares two GitHub names, ignoring the case of ASCII letters
+// only. GitHub names are ASCII; strings.EqualFold would also fold Unicode, and
+// match the Kelvin sign (U+212A) to "k".
+func asciiEqualFold(a, b string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := 0; i < len(a); i++ {
+		ca, cb := a[i], b[i]
+		if 'A' <= ca && ca <= 'Z' {
+			ca += 'a' - 'A'
+		}
+		if 'A' <= cb && cb <= 'Z' {
+			cb += 'a' - 'A'
+		}
+		if ca != cb {
+			return false
+		}
+	}
+	return true
 }
 
 // errMarkerNotAProject says a marker names a repo that is not one of the

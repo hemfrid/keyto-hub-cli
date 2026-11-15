@@ -17,6 +17,7 @@ import (
 	"github.com/hemfrid/keyto-hub-cli/internal/hub"
 	"github.com/hemfrid/keyto-hub-cli/internal/prereq"
 	"github.com/hemfrid/keyto-hub-cli/internal/stack"
+	"github.com/hemfrid/keyto-hub-cli/internal/termsafe"
 )
 
 // diagnosticsSchemaVersion is the envelope version the Hub's
@@ -126,7 +127,7 @@ func runDoctor(ctx context.Context, args []string) error {
 		// prereq.Ensure). manual items are never auto-run — re-diagnose after so
 		// the summary reflects the post-fix state.
 		if err := prereq.Ensure(ctx, tools, prereq.Opts{Deps: deps, AutoYes: *yes}); err != nil {
-			fmt.Fprintln(os.Stderr, "keyto doctor --fix:", err)
+			fmt.Fprintln(os.Stderr, "keyto doctor --fix:", termsafe.Text(err.Error()))
 		}
 		checks = diagnose(ctx, deps, tools)
 	}
@@ -173,7 +174,7 @@ func maybeReportDoctor(ctx context.Context, kind stack.Kind, checks []prereq.Che
 		// ErrNotAuthed (no credential) → skip silently; any other load error is
 		// equally non-fatal for a best-effort report.
 		if !errors.Is(err, config.ErrNotAuthed) {
-			fmt.Fprintf(os.Stderr, "note: couldn't send setup report to the Hub: %v\n", err)
+			fmt.Fprintf(os.Stderr, "note: couldn't send setup report to the Hub: %s\n", termsafe.Text(err.Error()))
 		}
 		return
 	}
@@ -184,7 +185,7 @@ func maybeReportDoctor(ctx context.Context, kind stack.Kind, checks []prereq.Che
 	payload := buildDiagnosticsPayload(ctx, checks)
 
 	if err := postDiagnostics(ctx, creds, payload); err != nil {
-		fmt.Fprintf(os.Stderr, "note: couldn't send setup report to the Hub: %v\n", err)
+		fmt.Fprintf(os.Stderr, "note: couldn't send setup report to the Hub: %s\n", termsafe.Text(err.Error()))
 		return
 	}
 	fmt.Fprintln(os.Stderr, "• sent your setup report to the Hub")
