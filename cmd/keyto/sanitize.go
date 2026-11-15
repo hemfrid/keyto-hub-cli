@@ -1,6 +1,12 @@
 package main
 
-import "github.com/hemfrid/keyto-hub-cli/internal/termsafe"
+import (
+	"fmt"
+	"io"
+	"strings"
+
+	"github.com/hemfrid/keyto-hub-cli/internal/termsafe"
+)
 
 // sanitizeForTerminal makes untrusted server text safe to print as one line.
 // See termsafe.Sanitize.
@@ -11,4 +17,16 @@ func sanitizeForTerminal(s string, keepColour bool) string { return termsafe.San
 // to), so both are stripped of terminal control sequences.
 func signedInLine(prefix, name, email string) string {
 	return prefix + " " + sanitizeForTerminal(name, false) + " (" + sanitizeForTerminal(email, false) + ")"
+}
+
+// printError writes "keyto: <error>" for the user. An error can carry a tool's
+// output (git, npm), which may hold terminal control sequences a server sent.
+// Each line is stripped of them on its own, so a multi-line message keeps its
+// lines and its indentation.
+func printError(w io.Writer, err error) {
+	lines := strings.Split(err.Error(), "\n")
+	for i, line := range lines {
+		lines[i] = sanitizeForTerminal(line, false)
+	}
+	fmt.Fprintln(w, "keyto:", strings.Join(lines, "\n"))
 }

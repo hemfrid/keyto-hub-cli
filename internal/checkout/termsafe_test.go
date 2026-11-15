@@ -104,9 +104,13 @@ func TestMarkerPrompt_PrintsTheMarkerNameWithoutControlSequences(t *testing.T) {
 		In:          strings.NewReader("y\n"),
 		Out:         &out,
 	}
-	if _, err := checkout.Run(context.Background(), "", d); err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	// The prompt shows the name without control sequences. Answering yes then
+	// refuses: that marker is not one of the user's Hub projects.
+	_, err := checkout.Run(context.Background(), "", d)
+	if err == nil {
+		t.Fatal("want the marker refused")
 	}
+	assertTerminalSafe(t, "the refusal", err.Error())
 	assertTerminalSafe(t, "the marker prompt", out.String())
 	if !strings.Contains(out.String(), "Work in evilname?") {
 		t.Errorf("the readable name should remain; got %q", out.String())

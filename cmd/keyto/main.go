@@ -97,10 +97,17 @@ var reauth = func(ctx context.Context) (*config.Creds, error) {
 }
 
 func main() {
-	if err := dispatch(os.Args[1:]); err != nil {
-		fmt.Fprintln(os.Stderr, "keyto:", err)
-		os.Exit(1)
+	os.Exit(run(os.Args[1:], os.Stderr))
+}
+
+// run executes one keyto command and returns the process exit code. A failure
+// is printed to errOut through printError, never as the raw error.
+func run(args []string, errOut io.Writer) int {
+	if err := dispatch(args); err != nil {
+		printError(errOut, err)
+		return 1
 	}
+	return 0
 }
 
 func dispatch(args []string) error {

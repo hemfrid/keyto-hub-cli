@@ -110,6 +110,9 @@ func (s *session) runWithArg(ctx context.Context, name string) (string, error) {
 	}
 	if m != nil && m.Name == name {
 		// Re-wire in place.
+		if err := s.checkMarkerProject(ctx, m); err != nil {
+			return "", err
+		}
 		if err := s.Wire(s.Cwd, m, s.Creds.UserEmail, s.Creds.UserName); err != nil {
 			return "", err
 		}
@@ -160,6 +163,9 @@ func (s *session) runInteractive(ctx context.Context) (string, error) {
 		}
 		answer = strings.TrimSpace(strings.ToLower(answer))
 		if answer == "" || answer == "y" || answer == "yes" {
+			if err := s.checkMarkerProject(ctx, m); err != nil {
+				return "", err
+			}
 			if err := s.Wire(s.Cwd, m, s.Creds.UserEmail, s.Creds.UserName); err != nil {
 				return "", err
 			}
@@ -170,6 +176,31 @@ func (s *session) runInteractive(ctx context.Context) (string, error) {
 	}
 
 	return s.runPicker(ctx)
+}
+
+// checkMarkerProject refuses to re-wire a checkout whose marker does not name
+// one of the user's own Hub projects. The marker (.keyto/project.json) is a
+// file committed in the repo, and its org and repo become the git remote: a
+// marker pointing at another repo would send the user's pushes there. The
+// project list is the Hub's (the one the picker shows). The marker's org/repo
+// must be a listed project (GitHub names compare without case), and that
+// project must carry the marker's name, so "Work in X?" and the remote agree.
+// A list that cannot be read wires nothing; its error goes back as it is, so a
+// refused credential still leads to a new sign-in.
+func (s *session) checkMarkerProject(ctx context.Context, m *project.Marker) error {
+	projects, err := s.List(ctx)
+	if err != nil {
+		return err
+	}
+	for _, p := range projects {
+		if strings.EqualFold(p.Org, m.Org) && strings.EqualFold(p.Repo, m.Repo) && p.Name == m.Name {
+			return nil
+		}
+	}
+	return fmt.Errorf("this folder's project marker names %s/%s as project %q, which is not one of your Hub projects, so the git remote was left unchanged. "+
+		"If you were added to the project just now, run the command again. Otherwise check .keyto/project.json against the project in the Hub, "+
+		"or run `keyto checkout` in an empty folder and pick the project from the list",
+		safe(m.Org), safe(m.Repo), safe(m.Name))
 }
 
 // runPicker shows a numbered list of projects and lets the user pick one.
