@@ -256,7 +256,11 @@ func checkoutDeps(ctx context.Context, creds *config.Creds, cwd string) checkout
 			return cmd.Run()
 		},
 		Wire: func(dir string, m *project.Marker, email, name string) error {
-			return gitwire.Wire(gitwire.RealRunner, dir, m, email, name)
+			hubURL := ""
+			if creds != nil {
+				hubURL = creds.HubURL
+			}
+			return gitwire.Wire(gitwire.RealRunner, dir, m, hubURL, email, name)
 		},
 		ReadMarker:  project.Read,
 		WriteMarker: project.Write,
@@ -842,7 +846,9 @@ func cloneArgs(hubURL, exe, repoURL, dir string) []string {
 			"-c", key+"="+helperCommand(exe),
 		)
 	}
-	return append(args, "clone", repoURL, dir)
+	// "--" ends the options: a directory the user typed that starts with "-"
+	// is a path, never a git option.
+	return append(args, "clone", "--", repoURL, dir)
 }
 
 // helperCommand returns the git `!` credential helper that runs `keyto

@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -213,7 +214,7 @@ func TestCloneArgs_InjectsCredentialHelperBeforeClone(t *testing.T) {
 	want := []string{
 		"-c", "credential.https://hub.keytolabs.com.helper=",
 		"-c", "credential.https://hub.keytolabs.com.helper=!'/opt/keyto/keyto' credential",
-		"clone", "https://hub.keytolabs.com/git/o/r.git", "/tmp/r",
+		"clone", "--", "https://hub.keytolabs.com/git/o/r.git", "/tmp/r",
 	}
 	if strings.Join(args, "\x00") != strings.Join(want, "\x00") {
 		t.Fatalf("cloneArgs mismatch\n got: %q\nwant: %q", args, want)
@@ -225,8 +226,8 @@ func TestCloneArgs_InjectsCredentialHelperBeforeClone(t *testing.T) {
 func TestCloneArgs_NoHubURLOmitsHelper(t *testing.T) {
 	args := cloneArgs("", "/opt/keyto/keyto", "https://x/git/o/r.git", "/tmp/r")
 
-	if len(args) != 3 || args[0] != "clone" {
-		t.Fatalf("expected plain [clone <url> <dir>], got %v", args)
+	if len(args) != 4 || args[0] != "clone" || args[1] != "--" {
+		t.Fatalf("expected plain [clone -- <url> <dir>], got %v", args)
 	}
 }
 
@@ -284,7 +285,8 @@ func TestCloneArgs_GitConsultsOnlyKeytoHelperForHub(t *testing.T) {
 		t.Helper()
 		_ = os.Remove(logPath)
 		args := cloneArgs("https://hub.keytolabs.com", keyto, "unused", "unused")
-		args = append(args[:len(args)-3], "credential", "fill")
+		// Keep the -c flags, replace "clone -- <url> <dir>" with "credential fill".
+		args = append(args[:slices.Index(args, "clone")], "credential", "fill")
 		cmd := exec.Command("git", args...)
 		cmd.Env = append(os.Environ(), "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL="+global, "GIT_TERMINAL_PROMPT=0")
 		cmd.Stdin = strings.NewReader("protocol=https\nhost=" + host + "\n\n")
@@ -979,5 +981,17 @@ func TestBootDeps_DetectsStackFromCwd(t *testing.T) {
 	}
 	if !d.EnvFileExists(".dev.vars") || d.EnvFileExists(".env") {
 		t.Fatal("EnvFileExists must check the named file in cwd")
+	}
+}
+
+// A directory the user types is the clone's last argument, after "--", so one
+// that starts with "-" is a path, never a git option.
+func TestCloneArgs_ADirectoryStartingWithADashIsNeverAnOption(t *testing.T) {
+	for _, dir := range []string{"--upload-pack=touch /tmp/pwned", "-c", "--config=core.sshCommand=evil"} {
+		args := cloneArgs("https://hub.keytolabs.com", "/opt/keyto/keyto", "https://hub.keytolabs.com/git/o/r.git", dir)
+		n := len(args)
+		if n < 4 || args[n-4] != "clone" || args[n-3] != "--" || args[n-1] != dir {
+			t.Errorf("dir %q: want [... clone -- <url> %q], got %q", dir, dir, args)
+		}
 	}
 }

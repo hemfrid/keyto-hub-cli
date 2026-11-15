@@ -3,7 +3,10 @@ package gitwire
 import (
 	"errors"
 	"fmt"
+	"net"
+	"net/url"
 	"os/exec"
+	"strings"
 
 	"github.com/hemfrid/keyto-hub-cli/internal/ghname"
 	"github.com/hemfrid/keyto-hub-cli/internal/project"
@@ -38,15 +41,28 @@ type Runner func(dir string, args ...string) error
 // The first error encountered is returned immediately; subsequent steps are
 // not attempted.
 //
-// The marker's org and repo must be GitHub names (ghname): the marker is a
-// file in the repo, and those two go into the remote URL. Otherwise nothing
-// is run.
-func Wire(run Runner, dir string, m *project.Marker, email, name string) error {
+// The marker is a file in the repo, so it is not trusted:
+//   - its org and repo must be GitHub names (ghname), since they go into the
+//     remote URL;
+//   - its hub_url must be the same origin (scheme, host, port) as hubURL, the
+//     Hub the user is signed in to. The remote and the credential helper are
+//     then built from hubURL, never from the marker's text, so a marker that
+//     names another host cannot send this checkout's pushes there.
+//
+// Otherwise nothing is run.
+func Wire(run Runner, dir string, m *project.Marker, hubURL, email, name string) error {
+	signedIn, ok := origin(hubURL)
+	if !ok {
+		return errors.New("not signed in to a Hub, so the git remote was left unchanged; run `keyto auth`")
+	}
+	if markerOrigin, ok := origin(m.HubURL); !ok || markerOrigin != signedIn {
+		return errors.New("this checkout's .keyto/project.json names a different Hub than the one you are signed in to, so the git remote and credential helper were left unchanged")
+	}
 	if !ghname.ValidOwner(m.Org) || !ghname.ValidRepo(m.Repo) {
 		return errors.New("the project marker's org or repo is not a GitHub name, so the git remote was left unchanged (check .keyto/project.json)")
 	}
-	remoteURL := fmt.Sprintf("%s/git/%s/%s.git", m.HubURL, m.Org, m.Repo)
-	credKey := fmt.Sprintf("credential.%s.helper", m.HubURL)
+	remoteURL := fmt.Sprintf("%s/git/%s/%s.git", strings.TrimRight(hubURL, "/"), m.Org, m.Repo)
+	credKey := fmt.Sprintf("credential.%s.helper", hubURL)
 
 	steps := [][]string{
 		{"remote", "set-url", "origin", remoteURL},
@@ -77,4 +93,33 @@ func RealRunner(dir string, args ...string) error {
 		return fmt.Errorf("git %v: %w", args, err)
 	}
 	return nil
+}
+
+// origin is "scheme://host:port" for an http(s) URL with no user info, with the
+// scheme and host lowercased and the default port filled in, and false for
+// anything else. Two URLs name the same Hub when their origins are equal.
+func origin(raw string) (string, bool) {
+	u, err := url.Parse(raw)
+	if err != nil || u.User != nil || u.Opaque != "" || u.Host == "" {
+		return "", false
+	}
+	scheme := strings.ToLower(u.Scheme)
+	port := u.Port()
+	switch scheme {
+	case "https":
+		if port == "" {
+			port = "443"
+		}
+	case "http":
+		if port == "" {
+			port = "80"
+		}
+	default:
+		return "", false
+	}
+	host := strings.ToLower(u.Hostname())
+	if host == "" {
+		return "", false
+	}
+	return scheme + "://" + net.JoinHostPort(host, port), true
 }
