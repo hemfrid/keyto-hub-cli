@@ -43,11 +43,11 @@ func Update(ctx context.Context, root string, d Deps) (*UpdateResult, error) {
 		return nil, errors.New("no bundle installed here — run 'keyto ai init'")
 	}
 
-	meta, err := d.Meta(ctx)
+	meta, err := fetchMeta(ctx, d)
 	if err != nil {
 		return nil, err
 	}
-	res := &UpdateResult{FromTag: pin.Tag, Tag: meta.Tag}
+	res := &UpdateResult{FromTag: DisplayTag(pin.Tag), Tag: meta.Tag}
 	if meta.Tag == pin.Tag {
 		res.UpToDate = true
 		return res, nil

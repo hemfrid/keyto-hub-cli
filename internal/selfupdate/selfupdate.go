@@ -9,11 +9,13 @@ package selfupdate
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -64,6 +66,10 @@ func MaybeNotify(version string, interactive bool, out io.Writer) {
 	}
 }
 
+// releaseTagRe is the only tag shape a keyto release has. A tag that is not
+// vX.Y.Z never reaches the download URL or the terminal.
+var releaseTagRe = regexp.MustCompile(`^v[0-9]{1,6}\.[0-9]{1,6}\.[0-9]{1,6}$`)
+
 // LatestTag fetches the latest release tag (e.g. "v0.1.2") from the GitHub
 // releases API. The client and URL are injectable for testing.
 func LatestTag(ctx context.Context, client *http.Client, apiURL string) (string, error) {
@@ -88,6 +94,9 @@ func LatestTag(ctx context.Context, client *http.Client, apiURL string) (string,
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
 		return "", err
+	}
+	if !releaseTagRe.MatchString(body.TagName) {
+		return "", errors.New("github api: the latest release tag is not a version (vX.Y.Z)")
 	}
 	return body.TagName, nil
 }

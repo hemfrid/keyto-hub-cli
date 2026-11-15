@@ -56,7 +56,7 @@ func Init(ctx context.Context, root string, d Deps) (*InitResult, error) {
 		return nil, errors.New("bundle already installed (.keyto/skills-bundle.yaml exists) — run 'keyto ai update'")
 	}
 
-	meta, err := d.Meta(ctx)
+	meta, err := fetchMeta(ctx, d)
 	if err != nil {
 		return nil, err
 	}
