@@ -481,7 +481,7 @@ func bootDeps(ctx context.Context, cwd string, flags boot.Flags, creds *config.C
 		},
 		DBRunning:          func(ctx context.Context) bool { return composeDBRunning(ctx, cwd) },
 		NodeModulesPresent: func() bool { return dirExists(filepath.Join(cwd, "node_modules")) },
-		Install:            func(ctx context.Context) error { return npmInstall(ctx, cwd, npmLaneArgs(laneRegistry)) },
+		Install:            func(ctx context.Context) error { return npmInstall(ctx, cwd, laneRegistry) },
 		RunScript:          func(ctx context.Context, script string) error { return runNpmScript(ctx, cwd, script) },
 		// nil on CI / non-interactive shells (browserOpener returns nil) — boot
 		// then skips the open. --no-open is handled separately via flags.NoOpen.
@@ -578,18 +578,23 @@ func composeDBRunning(ctx context.Context, dir string) bool {
 }
 
 // npmInstall runs `npm ci` when a lockfile is present (reproducible install),
-// else `npm install`, with extraArgs after the subcommand. Output streams to
+// else `npm install`. laneRegistry is the Hub's npm registry when the project
+// uses it ("" otherwise): it is passed as the @hemfrid scope flag, and a 401
+// from it is reported as a typed error (npmInstallError). Output streams to
 // stderr to keep stdout clean.
-func npmInstall(ctx context.Context, dir string, extraArgs []string) error {
+func npmInstall(ctx context.Context, dir, laneRegistry string) error {
 	sub := "install"
 	if fileExists(filepath.Join(dir, "package-lock.json")) {
 		sub = "ci"
 	}
-	cmd := exec.CommandContext(ctx, "npm", append([]string{sub}, extraArgs...)...)
+	cmd := exec.CommandContext(ctx, "npm", append([]string{sub}, npmLaneArgs(laneRegistry)...)...)
 	cmd.Dir = dir
-	cmd.Stdout = os.Stderr
-	cmd.Stderr = os.Stderr
-	return cmd.Run()
+	tail := &tailBuffer{max: npmOutputTail}
+	out := io.MultiWriter(os.Stderr, tail)
+	cmd.Stdout = out
+	cmd.Stderr = out
+	err := cmd.Run()
+	return npmInstallError(err, tail.String(), laneRegistry)
 }
 
 // runNpmScript runs `npm run <script>` in dir. The "dev" script runs in the
