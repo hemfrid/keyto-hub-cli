@@ -17,6 +17,7 @@ import (
 	"bufio"
 	"fmt"
 	"io"
+	"net/url"
 	"strings"
 
 	"github.com/hemfrid/keyto-hub-cli/internal/config"
@@ -34,13 +35,16 @@ const (
 //   - out: stdout to git — the credential lines on a successful "get".
 //   - errOut: stderr to the user — friendly re-login hints (never secrets).
 //   - creds: the stored Keyto credentials (may be nil if not authenticated).
-//   - hubHost: the hostname of the Hub (e.g. "hub.keytolabs.com").
+//   - hubURL: the signed-in Hub's URL (e.g. "https://hub.keytolabs.com"). The
+//     helper answers only a request for that origin: the same protocol as its
+//     scheme and the same host, with any port. A request for the Hub's host
+//     over http would carry the token in cleartext, so it is not answered.
 func Helper(
 	op string,
 	in io.Reader,
 	out, errOut io.Writer,
 	creds *config.Creds,
-	hubHost string,
+	hubURL string,
 ) error {
 	// "store" is always a no-op: we manage credentials ourselves.
 	if op == "store" {
@@ -52,10 +56,10 @@ func Helper(
 
 	attrs := parseAttrs(in)
 
-	// Only act for the Hub host. When not signed in, hubHost is "" and never
-	// matches a real request host, so we stay silent and defer to the next
+	// Only act for the Hub's origin. When not signed in (or the stored URL does
+	// not parse), nothing matches, so we stay silent and defer to the next
 	// helper in git's chain.
-	if attrs["host"] != hubHost {
+	if !forHub(attrs, hubURL) {
 		return nil
 	}
 
@@ -99,4 +103,15 @@ func parseAttrs(r io.Reader) map[string]string {
 		attrs[k] = v
 	}
 	return attrs
+}
+
+// forHub reports whether a git credential request is for the Hub at hubURL:
+// its protocol is hubURL's scheme and its host (with any port) is hubURL's
+// host, both compared case-insensitively.
+func forHub(attrs map[string]string, hubURL string) bool {
+	u, err := url.Parse(hubURL)
+	if err != nil || u.Scheme == "" || u.Host == "" || u.User != nil {
+		return false
+	}
+	return strings.EqualFold(attrs["protocol"], u.Scheme) && strings.EqualFold(attrs["host"], u.Host)
 }

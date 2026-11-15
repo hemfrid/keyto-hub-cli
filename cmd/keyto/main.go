@@ -8,7 +8,6 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -885,16 +884,14 @@ func runCredential(args []string) error {
 		}
 	}
 
-	// Derive the Hub hostname from the stored HubURL.  If we have no creds the
-	// host is "" which never matches any git request host.
-	hubHost := ""
-	if creds != nil && creds.HubURL != "" {
-		if u, err := url.Parse(creds.HubURL); err == nil {
-			hubHost = u.Host
-		}
+	// The helper answers only the signed-in Hub's origin (protocol and host).
+	// With no creds the URL is "", which matches no request.
+	hubURL := ""
+	if creds != nil {
+		hubURL = creds.HubURL
 	}
 
-	return credential.Helper(op, os.Stdin, os.Stdout, os.Stderr, creds, hubHost)
+	return credential.Helper(op, os.Stdin, os.Stdout, os.Stderr, creds, hubURL)
 }
 
 // runUpdate implements `keyto update`: fetch the latest release, verify it, and
