@@ -14,6 +14,7 @@ import (
 	"strings"
 
 	"github.com/hemfrid/keyto-hub-cli/internal/config"
+	"github.com/hemfrid/keyto-hub-cli/internal/ghname"
 	"github.com/hemfrid/keyto-hub-cli/internal/hub"
 	"github.com/hemfrid/keyto-hub-cli/internal/project"
 	"github.com/hemfrid/keyto-hub-cli/internal/termsafe"
@@ -126,6 +127,9 @@ func (s *session) runWithArg(ctx context.Context, name string) (string, error) {
 		return "", fmt.Errorf("project %q not found or you are not a member", name)
 	}
 
+	if err := checkRepoNames(proj); err != nil {
+		return "", err
+	}
 	if dir, adopted, err := s.maybeAdopt(proj); err != nil || adopted {
 		return dir, err
 	}
@@ -197,6 +201,9 @@ func (s *session) runPicker(ctx context.Context) (string, error) {
 	}
 	proj := projects[idx-1]
 
+	if err := checkRepoNames(proj); err != nil {
+		return "", err
+	}
 	if dir, adopted, err := s.maybeAdopt(proj); err != nil || adopted {
 		return dir, err
 	}
@@ -311,6 +318,16 @@ func (s *session) cloneAndWire(proj hub.Project, dir string) (string, error) {
 	}
 	fmt.Fprintf(s.Out, "Cloned %s into %s\n", safe(proj.Name), safe(dir))
 	return dir, nil
+}
+
+// checkRepoNames refuses a project whose org or repo, as the Hub lists them,
+// is not a GitHub owner or repository name. Both go into the git remote URL
+// (remoteURL) and into the adopt prompt, so this runs before either.
+func checkRepoNames(p hub.Project) error {
+	if !ghname.ValidOwner(p.Org) || !ghname.ValidRepo(p.Repo) {
+		return fmt.Errorf("the Hub's org or repo for project %q is not a GitHub name; nothing was cloned or changed", safe(p.Name))
+	}
+	return nil
 }
 
 // remoteURL builds the Hub git proxy URL for a project.

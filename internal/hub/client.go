@@ -169,7 +169,7 @@ func (c *Client) FetchEnvValues(
 		return nil, nil, fmt.Errorf("fetch-env-values: marshal request: %w", err)
 	}
 
-	endpoint := fmt.Sprintf("%s/api/cli/projects/%s/%s/env/%s/values", c.BaseURL, org, repo, env)
+	endpoint := c.BaseURL + envValuesPath(org, repo, env)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
 	if err != nil {
 		return nil, nil, fmt.Errorf("fetch-env-values: build request: %w", err)
@@ -347,7 +347,7 @@ func (c *Client) SetEnvValues(
 		return nil, fmt.Errorf("set-env-values: marshal request: %w", err)
 	}
 
-	endpoint := fmt.Sprintf("%s/api/cli/projects/%s/%s/env/%s/values", c.BaseURL, org, repo, env)
+	endpoint := c.BaseURL + envValuesPath(org, repo, env)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPut, endpoint, bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("set-env-values: build request: %w", err)
@@ -491,4 +491,11 @@ func (c *Client) AIBundleTarball(ctx context.Context, tag string) ([]byte, error
 		return nil, &StatusError{Op: "ai-bundle download", StatusCode: resp.StatusCode}
 	}
 	return io.ReadAll(resp.Body)
+}
+
+// envValuesPath is the env-values route for a project. org, repo and env are
+// each escaped as one path segment, so a slash, "?" or "#" inside one of them
+// cannot change the route.
+func envValuesPath(org, repo, env string) string {
+	return "/api/cli/projects/" + url.PathEscape(org) + "/" + url.PathEscape(repo) + "/env/" + url.PathEscape(env) + "/values"
 }

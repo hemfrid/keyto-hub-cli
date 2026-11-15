@@ -2,6 +2,7 @@ package gitwire_test
 
 import (
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/hemfrid/keyto-hub-cli/internal/gitwire"
@@ -108,6 +109,36 @@ func assertCall(t *testing.T, c call, wantDir string, wantArgs []string) {
 	for i, a := range wantArgs {
 		if c.args[i] != a {
 			t.Errorf("call args[%d]: got %q, want %q", i, c.args[i], a)
+		}
+	}
+}
+
+// The marker is a file committed in the repo, so its org and repo are not
+// trusted either: a value that is not a GitHub owner or repo name could change
+// where the remote URL points. Nothing is run for such a marker.
+func TestWire_RefusesAMarkerOrgOrRepoThatIsNotAGitHubName(t *testing.T) {
+	cases := []struct{ org, repo string }{
+		{"hemfrid/../../other", "acme-web"},
+		{"hemfrid", "../../other/repo"},
+		{"hemfrid", "acme-web?x=1"},
+		{"evil.example@hemfrid", "acme-web"},
+		{"hemfrid", "acme-web\n[core]\n\tsshCommand = evil"},
+		{"", "acme-web"},
+		{"hemfrid", ""},
+		{"hemfrid", "acme-web.git"},
+	}
+	for _, c := range cases {
+		var calls []call
+		m := &project.Marker{Name: "acme-web", Org: c.org, Repo: c.repo, HubURL: "https://hub.example.com"}
+		err := gitwire.Wire(makeFakeRunner(&calls, -1), "/repo", m, "alice@example.com", "Alice")
+		if err == nil {
+			t.Errorf("org %q repo %q: want an error", c.org, c.repo)
+		}
+		if len(calls) != 0 {
+			t.Errorf("org %q repo %q: %d git command(s) ran: %v", c.org, c.repo, len(calls), calls)
+		}
+		if err != nil && strings.ContainsAny(err.Error(), "\n\r\x1b") {
+			t.Errorf("org %q repo %q: the error carries a control character: %q", c.org, c.repo, err.Error())
 		}
 	}
 }

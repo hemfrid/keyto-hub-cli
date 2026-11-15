@@ -652,6 +652,37 @@ func TestEveryRefusedCall_PrintsGosStatusTextNeverTheServers(t *testing.T) {
 	}
 }
 
+// The org, repo and env in the env-values path come from the project marker
+// (a file in the repo) and the command line. Each is one path segment: a
+// value with a slash, a query or a fragment in it must not change the route.
+func TestEnvValuesPath_EachPartStaysOnePathSegment(t *testing.T) {
+	var gotPath, gotQuery string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath, gotQuery = r.URL.EscapedPath(), r.URL.RawQuery
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"env":"uat","values":{},"missing":[],"updated":[]}`))
+	}))
+	defer srv.Close()
+	c := &hub.Client{BaseURL: srv.URL, Credential: "tok"}
+	ctx := context.Background()
+
+	want := "/api/cli/projects/hemfrid%2F..%2F..%2Fadmin/acme%3Fx=1%23f/env/uat%2Fextra/values"
+	_, _, _ = c.FetchEnvValues(ctx, "hemfrid/../../admin", "acme?x=1#f", "uat/extra", []string{"K"})
+	if gotPath != want || gotQuery != "" {
+		t.Errorf("FetchEnvValues: path %q query %q, want path %q and no query", gotPath, gotQuery, want)
+	}
+	_, _ = c.SetEnvValues(ctx, "hemfrid/../../admin", "acme?x=1#f", "uat/extra", map[string]string{"K": "V"})
+	if gotPath != want || gotQuery != "" {
+		t.Errorf("SetEnvValues: path %q query %q, want path %q and no query", gotPath, gotQuery, want)
+	}
+
+	// Ordinary values give the path they always did.
+	_, _, _ = c.FetchEnvValues(ctx, "hemfrid", "acme-web", "uat", []string{"K"})
+	if gotPath != "/api/cli/projects/hemfrid/acme-web/env/uat/values" {
+		t.Errorf("ordinary path changed: %q", gotPath)
+	}
+}
+
 // ---- PostDiagnostics ----
 
 func TestPostDiagnostics_Success(t *testing.T) {

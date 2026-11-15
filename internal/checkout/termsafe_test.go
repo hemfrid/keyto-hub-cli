@@ -62,8 +62,9 @@ func TestPicker_PrintsHubTextWithoutControlSequences_AndRefusesTheName(t *testin
 	}
 }
 
-// A project whose name is fine but whose org, repo and role are not.
-var hostileOrgRepo = hub.Project{Name: "acme-web", Org: hostileProject.Org, Repo: hostileProject.Repo, Role: hostileProject.Role}
+// A project whose name, org and repo are fine but whose role is not. (A
+// hostile org or repo is refused outright: see repo_names_test.go.)
+var hostileOrgRepo = hub.Project{Name: "acme-web", Org: "hemfrid", Repo: "acme-web", Role: hostileProject.Role}
 
 func TestClone_PrintsTheResultWithoutControlSequences(t *testing.T) {
 	var out bytes.Buffer
@@ -112,7 +113,7 @@ func TestMarkerPrompt_PrintsTheMarkerNameWithoutControlSequences(t *testing.T) {
 	}
 }
 
-func TestAdopt_PrintsOrgRepoAndNameWithoutControlSequences(t *testing.T) {
+func TestAdopt_AHostileOrgOrRepoIsRefusedBeforeTheAdoptPrompt(t *testing.T) {
 	var out bytes.Buffer
 	cwd := t.TempDir()
 	d := checkout.Deps{
@@ -127,17 +128,17 @@ func TestAdopt_PrintsOrgRepoAndNameWithoutControlSequences(t *testing.T) {
 		},
 		Toplevel: func(dir string) (string, error) { return cwd, nil },
 		Cwd:      cwd,
-		In:       strings.NewReader("1\ny\n"), // pick it, adopt the folder
+		In:       strings.NewReader("1\ny\n"),
 		Out:      &out,
 	}
-	if _, err := checkout.Run(context.Background(), "", d); err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	_, err := checkout.Run(context.Background(), "", d)
+	if err == nil {
+		t.Fatal("want the project refused")
 	}
-	assertTerminalSafe(t, "the adopt output", out.String())
-	for _, want := range []string{"already a checkout of hemfrid/repo.", "Adopted existing checkout of evilname in"} {
-		if !strings.Contains(out.String(), want) {
-			t.Errorf("the readable text %q should remain; got %q", want, out.String())
-		}
+	assertTerminalSafe(t, "the output", out.String())
+	assertTerminalSafe(t, "the refusal", err.Error())
+	if strings.Contains(out.String(), "already a checkout of") {
+		t.Errorf("the adopt prompt was shown: %q", out.String())
 	}
 }
 
@@ -158,7 +159,7 @@ func TestCloneFailure_ErrorNamesTheRepoWithoutControlSequences(t *testing.T) {
 		t.Fatal("expected the clone error")
 	}
 	assertTerminalSafe(t, "the clone error", err.Error())
-	if !strings.Contains(err.Error(), "https://hub.example.com/git/hemfrid/repo.git") || !strings.Contains(err.Error(), "exit status 128") {
+	if !strings.Contains(err.Error(), "https://hub.example.com/git/hemfrid/acme-web.git") || !strings.Contains(err.Error(), "exit status 128") {
 		t.Errorf("the readable URL and cause should remain; got %q", err.Error())
 	}
 }

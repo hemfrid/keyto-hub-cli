@@ -1,9 +1,11 @@
 package gitwire
 
 import (
+	"errors"
 	"fmt"
 	"os/exec"
 
+	"github.com/hemfrid/keyto-hub-cli/internal/ghname"
 	"github.com/hemfrid/keyto-hub-cli/internal/project"
 )
 
@@ -35,7 +37,14 @@ type Runner func(dir string, args ...string) error
 //
 // The first error encountered is returned immediately; subsequent steps are
 // not attempted.
+//
+// The marker's org and repo must be GitHub names (ghname): the marker is a
+// file in the repo, and those two go into the remote URL. Otherwise nothing
+// is run.
 func Wire(run Runner, dir string, m *project.Marker, email, name string) error {
+	if !ghname.ValidOwner(m.Org) || !ghname.ValidRepo(m.Repo) {
+		return errors.New("the project marker's org or repo is not a GitHub name, so the git remote was left unchanged (check .keyto/project.json)")
+	}
 	remoteURL := fmt.Sprintf("%s/git/%s/%s.git", m.HubURL, m.Org, m.Repo)
 	credKey := fmt.Sprintf("credential.%s.helper", m.HubURL)
 
