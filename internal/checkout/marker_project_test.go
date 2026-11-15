@@ -282,3 +282,42 @@ func TestRewire_LeavesTheMarkersHubURLAlone(t *testing.T) {
 		t.Errorf("marker written %+v, want %+v", r.written, want)
 	}
 }
+
+// The marker file is committed in the repo. It is rewritten only once the
+// wiring went through: a refused or failed wiring must not leave a changed
+// .keyto/project.json behind.
+func TestRewire_AFailedWiringLeavesTheMarkerFileUntouched(t *testing.T) {
+	wireErr := errors.New("the project marker names another Hub than the one you are signed in to")
+	for _, mode := range []struct{ arg, input string }{{"acme-portal", ""}, {"", "y\n"}} {
+		var r rewire
+		d := r.deps(marker("acme-web", "Hemfrid", "Acme-Web"), renamedList(), mode.input)
+		d.Wire = func(dir string, m *project.Marker, email, name string) error { return wireErr }
+		_, err := checkout.Run(context.Background(), mode.arg, d)
+		if !errors.Is(err, wireErr) {
+			t.Errorf("arg %q: want the wiring error, got %v", mode.arg, err)
+		}
+		if len(r.written) != 0 {
+			t.Errorf("arg %q: the marker was rewritten although the wiring failed: %+v", mode.arg, r.written)
+		}
+		if strings.Contains(r.out.String(), "ready") || strings.Contains(r.out.String(), "was updated") {
+			t.Errorf("arg %q: reported success: %q", mode.arg, r.out.String())
+		}
+	}
+}
+
+func TestRewire_TheMarkerIsWrittenAfterTheWiring(t *testing.T) {
+	var order []string
+	var r rewire
+	d := r.deps(marker("acme-web", "hemfrid", "acme-web"), renamedList(), "")
+	d.Wire = func(dir string, m *project.Marker, email, name string) error {
+		order = append(order, "wire")
+		return nil
+	}
+	d.WriteMarker = func(dir string, m *project.Marker) error { order = append(order, "write"); return nil }
+	if _, err := checkout.Run(context.Background(), "acme-portal", d); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if strings.Join(order, ",") != "wire,write" {
+		t.Errorf("order = %v, want wire then write", order)
+	}
+}

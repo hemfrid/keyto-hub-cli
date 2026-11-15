@@ -213,7 +213,7 @@ func errMarkerNotAProject(m *project.Marker) error {
 // belongs to. The name, org and repo used are the Hub's, never the marker's
 // spelling, so the remote, the marker and what the user was shown agree. When
 // the marker differed (a rename in the Hub, or another letter case) it is
-// rewritten, and a changed name is pointed out.
+// rewritten after the wiring succeeded, and a changed name is pointed out.
 func (s *session) rewire(old *project.Marker, proj hub.Project) (string, error) {
 	if err := checkRepoNames(proj); err != nil {
 		return "", err
@@ -221,6 +221,12 @@ func (s *session) rewire(old *project.Marker, proj hub.Project) (string, error) 
 	// The marker's hub URL is left as it is: the remote is built from the
 	// signed-in Hub, not from the marker.
 	m := &project.Marker{Name: proj.Name, Org: proj.Org, Repo: proj.Repo, HubURL: old.HubURL}
+	// Wire first. The marker file is committed in the repo, so it is only
+	// rewritten once the wiring went through: a wiring that is refused (a
+	// marker naming another Hub) or fails must not leave a changed file behind.
+	if err := s.Wire(s.Cwd, m, s.Creds.UserEmail, s.Creds.UserName); err != nil {
+		return "", err
+	}
 	if *m != *old {
 		if err := s.WriteMarker(s.Cwd, m); err != nil {
 			return "", fmt.Errorf("write project marker: %w", err)
@@ -228,9 +234,6 @@ func (s *session) rewire(old *project.Marker, proj hub.Project) (string, error) 
 		if old.Name != m.Name {
 			fmt.Fprintf(s.Out, "note: the Hub calls this project %s (the marker said %s); .keyto/project.json was updated\n", safe(m.Name), safe(old.Name))
 		}
-	}
-	if err := s.Wire(s.Cwd, m, s.Creds.UserEmail, s.Creds.UserName); err != nil {
-		return "", err
 	}
 	fmt.Fprintln(s.Out, "ready")
 	return s.Cwd, nil
