@@ -13,6 +13,8 @@ import (
 	"runtime"
 	"strings"
 	"time"
+
+	"github.com/hemfrid/keyto-hub-cli/internal/termsafe"
 )
 
 const (
@@ -182,7 +184,7 @@ func download(ctx context.Context, client *http.Client, url string) ([]byte, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("GET %s: %s", url, resp.Status)
+		return nil, fmt.Errorf("GET %s: %s", url, termsafe.StatusLine(resp.StatusCode))
 	}
 	return io.ReadAll(io.LimitReader(resp.Body, maxDownload))
 }

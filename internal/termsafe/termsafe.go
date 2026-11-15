@@ -2,6 +2,8 @@
 package termsafe
 
 import (
+	"fmt"
+	"net/http"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -193,4 +195,12 @@ func validSGR(params string) bool {
 		}
 	}
 	return true
+}
+
+// StatusLine is the text to print for an HTTP status: the code and Go's own
+// name for it ("409 Conflict"), or the code alone when Go has no name. The
+// reason phrase in http.Response.Status is the server's (or a proxy's) own
+// text and can carry escape sequences, so it is never printed.
+func StatusLine(code int) string {
+	return strings.TrimSpace(fmt.Sprintf("%d %s", code, http.StatusText(code)))
 }

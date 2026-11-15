@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -566,6 +567,88 @@ func TestSetEnvValues_ErrorTextIsOneBoundedLineWithoutControlCharacters(t *testi
 	}
 	if !strings.Contains(msg, "GOOD_KEY") || !strings.Contains(msg, "ALSO_GOOD") || strings.Contains(msg, "bad key") {
 		t.Errorf("only well-formed key names are listed: %q", msg)
+	}
+}
+
+func TestSetEnvValues_ListsAtMostTwentySavedKeys(t *testing.T) {
+	keys := make([]string, 0, 25)
+	for i := 1; i <= 25; i++ {
+		keys = append(keys, fmt.Sprintf("SAVED_KEY_%02d", i))
+	}
+	raw, _ := json.Marshal(map[string]any{"error": "conflict", "code": "some_code", "updated": keys})
+	c := setEnvErrServer(t, http.StatusConflict, string(raw))
+	_, err := c.SetEnvValues(context.Background(), "o", "r", "uat", map[string]string{"K": "V"})
+	var he *hub.SetEnvValuesError
+	if !errors.As(err, &he) {
+		t.Fatalf("error should be a *hub.SetEnvValuesError, got %T", err)
+	}
+	if len(he.Updated) != 20 || he.Updated[19] != "SAVED_KEY_20" {
+		t.Errorf("want the first 20 keys, got %d: %v", len(he.Updated), he.Updated)
+	}
+	if strings.Contains(err.Error(), "SAVED_KEY_21") {
+		t.Errorf("the 21st key must not be listed: %q", err.Error())
+	}
+}
+
+// ---- the status line of every other refused call ----
+
+// evilStatusClient talks to a raw server whose status line carries an escape
+// sequence and the word "Unauthorized" as its reason phrase. The reason phrase
+// is the server's (or a proxy's) own text, so it must never be printed, and
+// it must not make a 418 look like a sign-in problem.
+func evilStatusClient(t *testing.T) *hub.Client {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				defer conn.Close()
+				buf := make([]byte, 8192)
+				_, _ = conn.Read(buf)
+				_, _ = conn.Write([]byte("HTTP/1.1 418 Unauthorized\x1b]0;pwned\x07\x1b[2J\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}"))
+			}()
+		}
+	}()
+	return &hub.Client{BaseURL: "http://" + ln.Addr().String(), Credential: "tok"}
+}
+
+func TestEveryRefusedCall_PrintsGosStatusTextNeverTheServers(t *testing.T) {
+	ctx := context.Background()
+	calls := map[string]func(c *hub.Client) error{
+		"token exchange failed": func(c *hub.Client) error {
+			_, err := c.ExchangeToken(ctx, "code", "verifier", "http://127.0.0.1/cb")
+			return err
+		},
+		"list-projects failed": func(c *hub.Client) error { _, err := c.ListProjects(ctx); return err },
+		"fetch-env-values failed": func(c *hub.Client) error {
+			_, _, err := c.FetchEnvValues(ctx, "o", "r", "uat", []string{"API_KEY"})
+			return err
+		},
+		"diagnostics post failed": func(c *hub.Client) error { return c.PostDiagnostics(ctx, map[string]string{"a": "b"}) },
+		"ai-bundle meta failed":   func(c *hub.Client) error { _, err := c.AIBundleMeta(ctx); return err },
+		"ai-bundle download failed": func(c *hub.Client) error {
+			_, err := c.AIBundleTarball(ctx, "v1.0.0")
+			return err
+		},
+	}
+	for prefix, call := range calls {
+		t.Run(prefix, func(t *testing.T) {
+			err := call(evilStatusClient(t))
+			if err == nil {
+				t.Fatal("expected an error on 418")
+			}
+			if got, want := err.Error(), prefix+": 418 I'm a teapot"; got != want {
+				t.Errorf("error = %q, want %q", got, want)
+			}
+		})
 	}
 }
 

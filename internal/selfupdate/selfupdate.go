@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/hemfrid/keyto-hub-cli/internal/config"
+	"github.com/hemfrid/keyto-hub-cli/internal/termsafe"
 )
 
 const (
@@ -79,7 +80,7 @@ func LatestTag(ctx context.Context, client *http.Client, apiURL string) (string,
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("github api: %s", resp.Status)
+		return "", fmt.Errorf("github api: %s", termsafe.StatusLine(resp.StatusCode))
 	}
 
 	var body struct {

@@ -63,8 +63,9 @@ var checkoutRun = checkout.Run
 var bootRun = boot.Run
 
 // isAuthError reports whether err looks like a server-side 401/Unauthorized.
-// The Hub client surfaces a non-200 status as `fmt.Errorf("...: %s", resp.Status)`,
-// so the error string contains "401" / "Unauthorized" — we match on that.
+// The Hub client surfaces a non-200 status as `"...: " + termsafe.StatusLine(code)`
+// (the code and Go's own text for it, never the server's reason phrase), so a
+// 401's error string contains "401 Unauthorized" — we match on that.
 func isAuthError(err error) bool {
 	if err == nil {
 		return false

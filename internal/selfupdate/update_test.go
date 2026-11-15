@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -263,5 +264,52 @@ func TestUpdate_DevBuild_InstallsLatest(t *testing.T) {
 	}
 	if !res.Updated || res.To != tag {
 		t.Errorf("dev build should install the latest release; got %+v", res)
+	}
+}
+
+// evilStatusURL serves a status line whose reason phrase carries an escape
+// sequence. That phrase is the server's own text and must never be printed.
+func evilStatusURL(t *testing.T) string {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				defer conn.Close()
+				buf := make([]byte, 8192)
+				_, _ = conn.Read(buf)
+				_, _ = conn.Write([]byte("HTTP/1.1 503 Down\x1b]0;pwned\x07\x1b[2J\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"))
+			}()
+		}
+	}()
+	return "http://" + ln.Addr().String()
+}
+
+func TestLatestTag_RefusedPrintsGosStatusTextNeverTheServers(t *testing.T) {
+	_, err := LatestTag(context.Background(), http.DefaultClient, evilStatusURL(t)+"/latest")
+	if err == nil {
+		t.Fatal("expected an error on 503")
+	}
+	if got, want := err.Error(), "github api: 503 Service Unavailable"; got != want {
+		t.Errorf("error = %q, want %q", got, want)
+	}
+}
+
+func TestDownload_RefusedPrintsGosStatusTextNeverTheServers(t *testing.T) {
+	url := evilStatusURL(t) + "/asset"
+	_, err := download(context.Background(), http.DefaultClient, url)
+	if err == nil {
+		t.Fatal("expected an error on 503")
+	}
+	if got, want := err.Error(), "GET "+url+": 503 Service Unavailable"; got != want {
+		t.Errorf("error = %q, want %q", got, want)
 	}
 }

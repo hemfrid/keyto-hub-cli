@@ -87,7 +87,7 @@ func (c *Client) ExchangeToken(ctx context.Context, code, codeVerifier, redirect
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("token exchange failed: %s", resp.Status)
+		return nil, fmt.Errorf("token exchange failed: %s", termsafe.StatusLine(resp.StatusCode))
 	}
 
 	var tr TokenResponse
@@ -123,7 +123,7 @@ func (c *Client) ListProjects(ctx context.Context) ([]Project, error) {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("list-projects failed: %s", resp.Status)
+		return nil, fmt.Errorf("list-projects failed: %s", termsafe.StatusLine(resp.StatusCode))
 	}
 
 	var lr listProjectsResponse
@@ -186,7 +186,7 @@ func (c *Client) FetchEnvValues(
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, nil, fmt.Errorf("fetch-env-values failed: %s", resp.Status)
+		return nil, nil, fmt.Errorf("fetch-env-values failed: %s", termsafe.StatusLine(resp.StatusCode))
 	}
 
 	var fr fetchEnvValuesResponse
@@ -272,7 +272,7 @@ func newSetEnvValuesError(resp *http.Response, values map[string]string) *SetEnv
 	// so the status line is rebuilt from the code alone.
 	e := &SetEnvValuesError{
 		StatusCode: resp.StatusCode,
-		Status:     strings.TrimSpace(fmt.Sprintf("%d %s", resp.StatusCode, http.StatusText(resp.StatusCode))),
+		Status:     termsafe.StatusLine(resp.StatusCode),
 	}
 	var body struct {
 		Error   string   `json:"error"`
@@ -414,7 +414,7 @@ func (c *Client) PostDiagnostics(ctx context.Context, payload any) error {
 	defer resp.Body.Close()
 
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		return fmt.Errorf("diagnostics post failed: %s", resp.Status)
+		return fmt.Errorf("diagnostics post failed: %s", termsafe.StatusLine(resp.StatusCode))
 	}
 	return nil
 }
@@ -460,7 +460,7 @@ func (c *Client) AIBundleMeta(ctx context.Context) (*AIBundleMeta, error) {
 		return nil, fmt.Errorf("ai-bundle meta: unauthorized — run 'keyto auth'")
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("ai-bundle meta failed: %s", resp.Status)
+		return nil, fmt.Errorf("ai-bundle meta failed: %s", termsafe.StatusLine(resp.StatusCode))
 	}
 	var m AIBundleMeta
 	if err := json.NewDecoder(resp.Body).Decode(&m); err != nil {
@@ -488,7 +488,7 @@ func (c *Client) AIBundleTarball(ctx context.Context, tag string) ([]byte, error
 		return nil, fmt.Errorf("ai-bundle: unauthorized — run 'keyto auth'")
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("ai-bundle download failed: %s", resp.Status)
+		return nil, fmt.Errorf("ai-bundle download failed: %s", termsafe.StatusLine(resp.StatusCode))
 	}
 	return io.ReadAll(resp.Body)
 }
