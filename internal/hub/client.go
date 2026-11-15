@@ -9,7 +9,11 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"regexp"
+	"strings"
 	"time"
+
+	"github.com/hemfrid/keyto-hub-cli/internal/termsafe"
 )
 
 // Project represents a Keyto project that the authenticated user is a member of.
@@ -214,10 +218,97 @@ type setEnvValuesResponse struct {
 	Updated []string `json:"updated"`
 }
 
+// SetEnvValuesError is a refused env write. The Hub's error body for this
+// endpoint is JSON: { error, code?, detail?, updated? }. It names keys, never
+// values. Only those decoded fields are kept, never the raw body.
+type SetEnvValuesError struct {
+	StatusCode int
+	Status     string   // e.g. "409 Conflict"
+	Code       string   // machine code, e.g. "secret_recently_deleted"; else the body's "error"
+	Detail     string   // the Hub's explanation, one line
+	Updated    []string // keys the Hub saved before it stopped
+}
+
+func (e *SetEnvValuesError) Error() string {
+	msg := "set-env-values failed: " + e.Status
+	if e.Code != "" {
+		msg += " (" + e.Code + ")"
+	}
+	if e.Detail != "" {
+		msg += ": " + e.Detail
+	}
+	if len(e.Updated) > 0 {
+		msg += " [already saved: " + strings.Join(e.Updated, ", ") + "]"
+	}
+	return msg
+}
+
+const (
+	setEnvErrBodyLimit   = 64 << 10 // bytes of an error body read
+	setEnvErrCodeLimit   = 64
+	setEnvErrDetailLimit = 500
+	setEnvErrKeysLimit   = 20
+	setEnvMinValueLen    = 4 // shorter values are too common in prose to match on
+)
+
+var envKeyRe = regexp.MustCompile(`^[A-Z][A-Z0-9_]{2,62}$`)
+
+// oneLine makes Hub-supplied text safe to print (termsafe.Sanitize: no escape
+// sequences, no newlines, no bidi overrides), collapses runs of spaces, and
+// cuts it at max runes.
+func oneLine(s string, max int) string {
+	s = strings.Join(strings.Fields(termsafe.Sanitize(s, false)), " ")
+	if r := []rune(s); len(r) > max {
+		s = string(r[:max]) + "..."
+	}
+	return s
+}
+
+// newSetEnvValuesError builds the error for a non-2xx answer. A body that is
+// not the Hub's JSON shape leaves only the status. A text field that contains
+// one of the submitted values is dropped: values are never shown.
+func newSetEnvValuesError(resp *http.Response, values map[string]string) *SetEnvValuesError {
+	e := &SetEnvValuesError{StatusCode: resp.StatusCode, Status: resp.Status}
+	var body struct {
+		Error   string   `json:"error"`
+		Code    string   `json:"code"`
+		Detail  string   `json:"detail"`
+		Updated []string `json:"updated"`
+	}
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, setEnvErrBodyLimit))
+	if err != nil || json.Unmarshal(raw, &body) != nil {
+		return e
+	}
+	hasValue := func(s string) bool {
+		for _, v := range values {
+			if len(v) >= setEnvMinValueLen && strings.Contains(s, v) {
+				return true
+			}
+		}
+		return false
+	}
+	code := body.Code
+	if code == "" {
+		code = body.Error
+	}
+	if !hasValue(code) {
+		e.Code = oneLine(code, setEnvErrCodeLimit)
+	}
+	if !hasValue(body.Detail) {
+		e.Detail = oneLine(body.Detail, setEnvErrDetailLimit)
+	}
+	for _, k := range body.Updated {
+		if len(e.Updated) < setEnvErrKeysLimit && envKeyRe.MatchString(k) {
+			e.Updated = append(e.Updated, k)
+		}
+	}
+	return e
+}
+
 // SetEnvValues upserts env vars in the given environment via the Hub and returns
-// the keys the Hub reports as updated. Non-2xx returns an error with the HTTP
-// status but never the raw body (to avoid leaking error details). Values are
-// never logged.
+// the keys the Hub reports as updated. Non-2xx returns a *SetEnvValuesError with
+// the HTTP status and the Hub's code, detail and already-saved keys, but never
+// the raw body. Values are never logged.
 func (c *Client) SetEnvValues(
 	ctx context.Context,
 	org, repo, env string,
@@ -245,7 +336,7 @@ func (c *Client) SetEnvValues(
 	defer resp.Body.Close()
 
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		return nil, fmt.Errorf("set-env-values failed: %s", resp.Status)
+		return nil, newSetEnvValuesError(resp, values)
 	}
 
 	var sr setEnvValuesResponse

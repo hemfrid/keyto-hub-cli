@@ -3,6 +3,7 @@ package hub_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -388,6 +389,101 @@ func TestSetEnvValues_Non2xx_ReturnsError(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), "secret detail") {
 		t.Errorf("error must not leak response body: %v", err)
+	}
+}
+
+// The Hub's error bodies for this endpoint are JSON: { error, code?, detail?,
+// updated? }. They carry key names, never values. The CLI shows code, detail
+// and the keys already saved, so the user learns why a write was refused.
+
+func setEnvErrServer(t *testing.T, status int, body string) *hub.Client {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(status)
+		_, _ = w.Write([]byte(body))
+	}))
+	t.Cleanup(srv.Close)
+	return &hub.Client{BaseURL: srv.URL, Credential: "tok"}
+}
+
+func TestSetEnvValues_409_ShowsCodeDetailAndSavedKeys(t *testing.T) {
+	c := setEnvErrServer(t, http.StatusConflict, `{"error":"conflict","code":"secret_recently_deleted",`+
+		`"detail":"OTHER_KEY in uat was deleted recently and can't be restored automatically.","updated":["API_KEY"]}`)
+	_, err := c.SetEnvValues(context.Background(), "o", "r", "uat", map[string]string{"API_KEY": "sk-1", "OTHER_KEY": "v2"})
+	if err == nil {
+		t.Fatal("expected error on 409, got nil")
+	}
+	for _, want := range []string{"409", "secret_recently_deleted", "OTHER_KEY in uat was deleted recently", "API_KEY"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error should contain %q, got: %v", want, err)
+		}
+	}
+	var he *hub.SetEnvValuesError
+	if !errors.As(err, &he) {
+		t.Fatalf("error should be a *hub.SetEnvValuesError, got %T", err)
+	}
+	if he.StatusCode != 409 || he.Code != "secret_recently_deleted" || len(he.Updated) != 1 || he.Updated[0] != "API_KEY" {
+		t.Errorf("unexpected fields: %+v", he)
+	}
+}
+
+func TestSetEnvValues_503_ShowsCodeAndDetail(t *testing.T) {
+	c := setEnvErrServer(t, http.StatusServiceUnavailable, `{"error":"service_unavailable","code":"secret_recover_failed",`+
+		`"detail":"OTHER_KEY: Key Vault could not finish restoring the deleted key.","updated":[]}`)
+	_, err := c.SetEnvValues(context.Background(), "o", "r", "prod", map[string]string{"OTHER_KEY": "v2"})
+	if err == nil {
+		t.Fatal("expected error on 503, got nil")
+	}
+	for _, want := range []string{"503", "secret_recover_failed", "could not finish restoring"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error should contain %q, got: %v", want, err)
+		}
+	}
+	if strings.Contains(err.Error(), "already saved") {
+		t.Errorf("no keys were saved, so none should be listed: %v", err)
+	}
+}
+
+func TestSetEnvValues_ErrorWithOnlyTheErrorField_FallsBackToIt(t *testing.T) {
+	c := setEnvErrServer(t, http.StatusForbidden, `{"error":"forbidden"}`)
+	_, err := c.SetEnvValues(context.Background(), "o", "r", "prod", map[string]string{"K": "V"})
+	if err == nil || !strings.Contains(err.Error(), "403") || !strings.Contains(err.Error(), "forbidden") {
+		t.Errorf("error should carry the status and the error field, got: %v", err)
+	}
+}
+
+func TestSetEnvValues_ErrorNeverEchoesASubmittedValue(t *testing.T) {
+	// The Hub never puts a value in an error. If a body ever did, it is dropped.
+	c := setEnvErrServer(t, http.StatusConflict, `{"error":"conflict","code":"some_code","detail":"could not store sk-live-123456"}`)
+	_, err := c.SetEnvValues(context.Background(), "o", "r", "uat", map[string]string{"API_KEY": "sk-live-123456"})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if strings.Contains(err.Error(), "sk-live-123456") {
+		t.Errorf("error must not contain a submitted value: %v", err)
+	}
+	if !strings.Contains(err.Error(), "409") || !strings.Contains(err.Error(), "some_code") {
+		t.Errorf("status and code should still show: %v", err)
+	}
+}
+
+func TestSetEnvValues_ErrorTextIsOneBoundedLineWithoutControlCharacters(t *testing.T) {
+	long := strings.Repeat("x", 5000)
+	c := setEnvErrServer(t, http.StatusConflict, `{"error":"conflict","code":"c\u001b[31m","detail":"line one\nline two \u001b[2J`+long+`","updated":["GOOD_KEY","bad key\u001b[0m","ALSO_GOOD"]}`)
+	_, err := c.SetEnvValues(context.Background(), "o", "r", "uat", map[string]string{"K": "V"})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	msg := err.Error()
+	if strings.ContainsAny(msg, "\x1b\n\r") {
+		t.Errorf("error must be one line with no escape characters: %q", msg)
+	}
+	if len(msg) > 1000 {
+		t.Errorf("error should be bounded, got %d bytes", len(msg))
+	}
+	if !strings.Contains(msg, "GOOD_KEY") || !strings.Contains(msg, "ALSO_GOOD") || strings.Contains(msg, "bad key") {
+		t.Errorf("only well-formed key names are listed: %q", msg)
 	}
 }
 
