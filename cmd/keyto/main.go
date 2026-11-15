@@ -62,16 +62,12 @@ var checkoutRun = checkout.Run
 // without running a real local boot loop.
 var bootRun = boot.Run
 
-// isAuthError reports whether err looks like a server-side 401/Unauthorized.
-// The Hub client surfaces a non-200 status as `"...: " + termsafe.StatusLine(code)`
-// (the code and Go's own text for it, never the server's reason phrase), so a
-// 401's error string contains "401 Unauthorized" — we match on that.
+// isAuthError reports whether err is a 401 the Hub answered, which means the
+// stored credential was refused. It reads the typed status code the Hub client
+// returns (hub.IsUnauthorized), never the error text: a project named
+// "app-401", a clone URL or a tool's output can all contain "401".
 func isAuthError(err error) bool {
-	if err == nil {
-		return false
-	}
-	msg := err.Error()
-	return strings.Contains(msg, "401") || strings.Contains(strings.ToLower(msg), "unauthorized")
+	return hub.IsUnauthorized(err)
 }
 
 // reauth re-runs the browser login flow (always minting a fresh credential),

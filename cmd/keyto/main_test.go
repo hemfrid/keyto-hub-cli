@@ -569,20 +569,25 @@ func TestRunEnvSync_Integration(t *testing.T) {
 	}
 }
 
-// TestIsAuthError verifies the 401/Unauthorized classifier used to trigger the
-// automatic re-auth retry.
+// TestIsAuthError verifies the classifier that triggers the automatic re-auth
+// retry: only a 401 the Hub actually answered, never text that looks like one.
 func TestIsAuthError(t *testing.T) {
+	hub401 := &hub.StatusError{Op: "list-projects", StatusCode: 401}
 	cases := []struct {
 		name string
 		err  error
 		want bool
 	}{
 		{"nil error", nil, false},
-		{"401 status string", fmt.Errorf("list-projects failed: 401 Unauthorized"), true},
-		{"lowercase unauthorized", errors.New("request rejected: unauthorized"), true},
-		{"bare 401 number", errors.New("got 401"), true},
+		{"a 401 from the Hub", hub401, true},
+		{"a 401 wrapped by the commands", fmt.Errorf("env sync: %w", fmt.Errorf("env sync: fetch values from Hub: %w", hub401)), true},
+		{"a 403 from the Hub", &hub.StatusError{Op: "list-projects", StatusCode: 403}, false},
+		{"a project named app-401 that was not found", errors.New(`project "app-401" not found or you are not a member`), false},
+		{"a clone URL with 401 in it", errors.New("clone https://hub.example/git/hemfrid/app-401.git: exit status 128"), false},
+		{"npm output that mentions 401", errors.New("exit status 1: npm error code E401"), false},
+		{"text that says unauthorized", errors.New("request rejected: unauthorized"), false},
+		{"text that looks like the Hub's 401 line", errors.New("list-projects failed: 401 Unauthorized"), false},
 		{"unrelated error", errors.New("connection refused"), false},
-		{"403 is not auth-reauth", errors.New("forbidden: 403"), false},
 	}
 	for _, tc := range cases {
 		if got := isAuthError(tc.err); got != tc.want {
@@ -665,7 +670,7 @@ func TestCheckout_AuthError_ReauthsAndRetriesOnce(t *testing.T) {
 	checkoutRun = func(ctx context.Context, arg string, d checkout.Deps) (string, error) {
 		runs++
 		if runs == 1 {
-			return "", fmt.Errorf("list-projects failed: 401 Unauthorized")
+			return "", &hub.StatusError{Op: "list-projects", StatusCode: 401}
 		}
 		// Retry must use the freshly-minted credential.
 		if d.Creds == nil || d.Creds.Credential != "tok_reauthed" {
@@ -694,7 +699,7 @@ func TestCheckout_PersistentAuthError_ReauthsOnceRunsTwiceReturnsError(t *testin
 	orig := checkoutRun
 	checkoutRun = func(ctx context.Context, arg string, d checkout.Deps) (string, error) {
 		runs++
-		return "", fmt.Errorf("list-projects failed: 401 Unauthorized")
+		return "", &hub.StatusError{Op: "list-projects", StatusCode: 401}
 	}
 	t.Cleanup(func() { checkoutRun = orig })
 
@@ -710,6 +715,53 @@ func TestCheckout_PersistentAuthError_ReauthsOnceRunsTwiceReturnsError(t *testin
 	}
 	if *reauthCalls != 1 {
 		t.Errorf("reauth called %d times, want exactly 1 (single retry)", *reauthCalls)
+	}
+}
+
+// A project whose name contains "401" that is not found is not a sign-in
+// problem: no browser re-login, no second run.
+func TestCheckout_ProjectNamedApp401NotFound_DoesNotReauth(t *testing.T) {
+	reauthCalls := reauthStubs(t, mintedCreds())
+	validCreds(t)
+
+	runs := 0
+	orig := checkoutRun
+	checkoutRun = func(ctx context.Context, arg string, d checkout.Deps) (string, error) {
+		runs++
+		return "", fmt.Errorf("project %q not found or you are not a member", arg)
+	}
+	t.Cleanup(func() { checkoutRun = orig })
+
+	err := runCheckoutImpl(context.Background(), []string{"app-401"})
+	if err == nil || !strings.Contains(err.Error(), "app-401") {
+		t.Fatalf("expected the not-found error, got: %v", err)
+	}
+	if runs != 1 {
+		t.Errorf("checkout ran %d times, want 1", runs)
+	}
+	if *reauthCalls != 0 {
+		t.Errorf("reauth called %d times, want 0", *reauthCalls)
+	}
+}
+
+// A boot step whose output mentions 401 (npm, a migration) is not a Hub 401.
+func TestBoot_StepOutputMentioning401_DoesNotReauth(t *testing.T) {
+	reauthCalls := reauthStubs(t, mintedCreds())
+	validCreds(t)
+
+	runs := 0
+	orig := bootRun
+	bootRun = func(ctx context.Context, d boot.Deps, f boot.Flags) error {
+		runs++
+		return fmt.Errorf("install: exit status 1: npm error code E401 Unauthorized")
+	}
+	t.Cleanup(func() { bootRun = orig })
+
+	if err := runBootImpl(context.Background(), nil); err == nil {
+		t.Fatal("expected the error to be returned")
+	}
+	if runs != 1 || *reauthCalls != 0 {
+		t.Errorf("boot ran %d times and reauth %d times, want 1 and 0", runs, *reauthCalls)
 	}
 }
 
@@ -805,7 +857,7 @@ func TestBoot_AuthError_ReauthsAndRetriesOnce(t *testing.T) {
 	bootRun = func(ctx context.Context, d boot.Deps, f boot.Flags) error {
 		runs++
 		if runs == 1 {
-			return fmt.Errorf("fetch-env-values failed: 401 Unauthorized")
+			return fmt.Errorf("env sync: %w", &hub.StatusError{Op: "fetch-env-values", StatusCode: 401})
 		}
 		return nil
 	}
@@ -830,7 +882,7 @@ func TestBoot_PersistentAuthError_ReauthsOnceRunsTwiceReturnsError(t *testing.T)
 	orig := bootRun
 	bootRun = func(ctx context.Context, d boot.Deps, f boot.Flags) error {
 		runs++
-		return fmt.Errorf("fetch-env-values failed: 401 Unauthorized")
+		return fmt.Errorf("env sync: %w", &hub.StatusError{Op: "fetch-env-values", StatusCode: 401})
 	}
 	t.Cleanup(func() { bootRun = orig })
 
