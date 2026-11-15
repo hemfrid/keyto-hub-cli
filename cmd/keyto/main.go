@@ -415,9 +415,12 @@ func runBootImpl(ctx context.Context, args []string) error {
 	// First run uses creds==nil — the env-sync step loads them from disk as it
 	// did before. If the Hub rejects the credential with a 401 (the only
 	// network-touching step in boot), re-auth in the browser and retry with the
-	// freshly-minted token threaded through, exactly once.
+	// freshly-minted token threaded through, exactly once. A failed npm install
+	// that names a 401 from the Hub's npm registry is only a hint (npm's output
+	// is not the Hub's word), so the Hub is asked first: see
+	// hubRefusesStoredCredential.
 	err = bootRun(ctx, bootDeps(ctx, cwd, flags, nil), flags)
-	if isAuthError(err) {
+	if hubRefusesStoredCredential(ctx, err) {
 		creds, rerr := reauth(ctx)
 		if rerr != nil {
 			return rerr
@@ -578,17 +581,27 @@ func composeDBRunning(ctx context.Context, dir string) bool {
 }
 
 // npmInstall runs `npm ci` when a lockfile is present (reproducible install),
-// else `npm install`. laneRegistry is the Hub's npm registry when the project
-// uses it ("" otherwise): it is passed as the @hemfrid scope flag, and a 401
-// from it is reported as a typed error (npmInstallError). Output streams to
-// stderr to keep stdout clean.
+// else `npm install`. Output streams to stderr to keep stdout clean.
+//
+// laneRegistry is the Hub's npm registry when the project installs through it
+// (a Workers repo; "" otherwise). Without it npm is attached straight to the
+// terminal, as always. With it, npm's output also goes through a pipe so its
+// last lines can be read for a 401 from that registry (npmInstallError). npm
+// then sees no terminal: it shows no progress bar, and it is asked for colour
+// explicitly when stderr is a terminal.
 func npmInstall(ctx context.Context, dir, laneRegistry string) error {
 	sub := "install"
 	if fileExists(filepath.Join(dir, "package-lock.json")) {
 		sub = "ci"
 	}
-	cmd := exec.CommandContext(ctx, "npm", append([]string{sub}, npmLaneArgs(laneRegistry)...)...)
+	colour := ui.IsStderrTTY() && os.Getenv("NO_COLOR") == ""
+	cmd := exec.CommandContext(ctx, "npm", npmInstallArgs(sub, laneRegistry, colour)...)
 	cmd.Dir = dir
+	if laneRegistry == "" {
+		cmd.Stdout = os.Stderr
+		cmd.Stderr = os.Stderr
+		return cmd.Run()
+	}
 	tail := &tailBuffer{max: npmOutputTail}
 	out := io.MultiWriter(os.Stderr, tail)
 	cmd.Stdout = out

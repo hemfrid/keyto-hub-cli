@@ -1,11 +1,14 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"regexp"
 	"strings"
 	"sync"
 
+	"github.com/hemfrid/keyto-hub-cli/internal/config"
 	"github.com/hemfrid/keyto-hub-cli/internal/hub"
 )
 
@@ -41,9 +44,10 @@ func (b *tailBuffer) String() string {
 var npm401Line = regexp.MustCompile(`^401 [^-]*- [A-Z]+ (\S+)`)
 
 // npmErrorLine returns the text of one of npm's own error lines ("npm error …",
-// or "npm ERR! …" from npm before v10), and false for any other line.
+// or "npm ERR! …" from npm before v10), and false for any other line. Colour
+// codes are dropped first: npm colours its prefix when asked to.
 func npmErrorLine(line string) (string, bool) {
-	line = strings.TrimSpace(line)
+	line = strings.TrimSpace(sanitizeForTerminal(line, false))
 	for _, prefix := range []string{"npm error ", "npm ERR! "} {
 		if rest, ok := strings.CutPrefix(line, prefix); ok {
 			return strings.TrimSpace(rest), true
@@ -77,19 +81,68 @@ func npmLaneRefusedToken(output, registry string) bool {
 	return codeE401 && laneURL
 }
 
-// npmInstallError turns a failed install into the error boot.Run returns. A
-// token the Hub's npm registry refused becomes a typed 401, so `keyto start`
-// signs in again and retries (the retry rewrites the lane's line in ~/.npmrc
-// with the new credential). Anything else is npm's error unchanged. npm's
-// output is already on the terminal, so it is not repeated in the message.
+// npmLaneRefused is a failed install whose npm output says the Hub's npm
+// registry answered 401. It is a hint, not proof: npm's output can be written
+// by any package in the tree (npm re-emits a dependency's postinstall output
+// as "npm error" lines). `keyto start` asks the Hub itself before it signs in
+// again (probeHubCredential).
+type npmLaneRefused struct{ err error }
+
+func (e *npmLaneRefused) Error() string {
+	// boot.Run prefixes this with "npm install: ".
+	return "the Hub's npm registry refused the stored credential (E401): " + e.err.Error()
+}
+
+func (e *npmLaneRefused) Unwrap() error { return e.err }
+
+// isNpmLaneRefused reports whether err carries the npm lane hint.
+func isNpmLaneRefused(err error) bool {
+	var hint *npmLaneRefused
+	return errors.As(err, &hint)
+}
+
+// npmInstallError turns a failed install into the error boot.Run returns: the
+// npm lane hint when npm's output says the Hub's registry refused the token,
+// else npm's error unchanged. npm's output is already on the terminal, so it
+// is not repeated in the message.
 func npmInstallError(err error, output, registry string) error {
 	if err == nil || !npmLaneRefusedToken(output, registry) {
 		return err
 	}
-	refused := &hub.StatusError{
-		Op:         "npm install",
-		StatusCode: 401,
-		Message:    "npm install: the Hub's npm registry refused the stored credential (E401)",
+	return &npmLaneRefused{err: err}
+}
+
+// probeHubCredential asks the Hub one authenticated question with the stored
+// credential (the project list). A typed 401 back means the Hub itself refuses
+// that credential. It is a package var so tests can stub it.
+var probeHubCredential = func(ctx context.Context) error {
+	creds, err := config.Load()
+	if err != nil {
+		return fmt.Errorf("load credentials: %w", err)
 	}
-	return fmt.Errorf("%w: %w", refused, err)
+	c := &hub.Client{BaseURL: creds.HubURL, Credential: creds.Credential}
+	_, err = c.ListProjects(ctx)
+	return err
+}
+
+// hubRefusesStoredCredential is the decision behind a re-login in `keyto
+// start`: a 401 the Hub answered directly, or the npm lane hint confirmed by
+// the Hub's own 401 on a probe. The probe runs only for the hint.
+func hubRefusesStoredCredential(ctx context.Context, err error) bool {
+	if isAuthError(err) {
+		return true
+	}
+	return isNpmLaneRefused(err) && hub.IsUnauthorized(probeHubCredential(ctx))
+}
+
+// npmInstallArgs are npm's arguments for the install. With the Hub's registry
+// in use, the @hemfrid scope flag is added, and --color=always when colour is
+// wanted: npm then writes to a pipe (see npmInstall) and would drop its colour.
+// Without the registry nothing is added.
+func npmInstallArgs(sub, laneRegistry string, colour bool) []string {
+	args := append([]string{sub}, npmLaneArgs(laneRegistry)...)
+	if laneRegistry != "" && colour {
+		args = append(args, "--color=always")
+	}
+	return args
 }
