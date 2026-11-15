@@ -43,6 +43,35 @@ func TestPrintError_AnOrdinaryErrorIsUnchanged(t *testing.T) {
 	}
 }
 
+// git writes its progress with carriage returns, each update overwriting the
+// last. A terminal shows only what follows the last one on a line; so does
+// printError. Windows line endings count as line breaks.
+func TestPrintError_GitProgressShowsOnlyItsLastUpdate(t *testing.T) {
+	err := errors.New("git [fetch origin]: exit status 128\n" +
+		"Receiving objects:  10% (1/10)\rReceiving objects:  50% (5/10)\rReceiving objects: 100% (10/10), done.\n" +
+		"remote: Counting objects: 3\rremote: Counting objects: 9, done.\r\n" +
+		"fatal: unable to access 'https://hub.example.com/git/hemfrid/acme-web.git/': denied\r\n" +
+		"hint: try again")
+	var out bytes.Buffer
+	printError(&out, err)
+	want := "keyto: git [fetch origin]: exit status 128\n" +
+		"Receiving objects: 100% (10/10), done.\n" +
+		"remote: Counting objects: 9, done.\n" +
+		"fatal: unable to access 'https://hub.example.com/git/hemfrid/acme-web.git/': denied\n" +
+		"hint: try again\n"
+	if got := out.String(); got != want {
+		t.Errorf("got %q\nwant %q", got, want)
+	}
+}
+
+func TestPrintError_ATrailingCarriageReturnDoesNotBlankTheLine(t *testing.T) {
+	var out bytes.Buffer
+	printError(&out, errors.New("fatal: bad\r"))
+	if got, want := out.String(), "keyto: fatal: bad\n"; got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
 // The real git runner, with a git that prints an escape sequence and fails.
 func TestPrintError_GitOutputFromTheRealRunnerIsSanitized(t *testing.T) {
 	if runtime.GOOS == "windows" {

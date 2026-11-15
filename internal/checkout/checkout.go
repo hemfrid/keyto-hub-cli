@@ -103,28 +103,34 @@ func Run(ctx context.Context, projectArg string, d Deps) (string, error) {
 
 // runWithArg handles the case where the user specified a project name explicitly.
 func (s *session) runWithArg(ctx context.Context, name string) (string, error) {
-	// Check if cwd is already that project.
 	m, err := s.ReadMarker(s.Cwd)
 	if err != nil {
 		return "", fmt.Errorf("read project marker: %w", err)
 	}
-	if m != nil && m.Name == name {
-		// Re-wire in place.
-		if err := s.checkMarkerProject(ctx, m); err != nil {
-			return "", err
-		}
-		if err := s.Wire(s.Cwd, m, s.Creds.UserEmail, s.Creds.UserName); err != nil {
-			return "", err
-		}
-		fmt.Fprintln(s.Out, "ready")
-		return s.Cwd, nil
-	}
 
-	// Fetch project list and find the named project.
 	projects, err := s.List(ctx)
 	if err != nil {
 		return "", err
 	}
+
+	// Is cwd already a checkout of that project? The marker says which repo
+	// this folder is; the Hub says what that repo's project is called.
+	if m != nil {
+		here, found := projectForMarker(projects, m)
+		switch {
+		case found && here.Name == name:
+			return s.rewire(m, here)
+		case found && m.Name == name:
+			// The marker carries the asked-for name, but its repo is another
+			// project's (a rename in the Hub, or a marker that was edited).
+			return "", fmt.Errorf("this folder is a checkout of %s/%s, which the Hub calls %q, not %q; nothing was changed. Run `keyto checkout %s` to work here",
+				safe(here.Org), safe(here.Repo), safe(here.Name), safe(name), safe(here.Name))
+		case !found && m.Name == name:
+			return "", errMarkerNotAProject(m)
+		}
+		// The marker is for some other project: look the asked-for one up.
+	}
+
 	proj, found := findProject(projects, name)
 	if !found {
 		return "", fmt.Errorf("project %q not found or you are not a member", name)
@@ -155,22 +161,24 @@ func (s *session) runInteractive(ctx context.Context) (string, error) {
 	}
 
 	if m != nil {
-		// Prompt the user whether to work in the current project.
-		fmt.Fprintf(s.Out, "Work in %s? [Y/n] ", safe(m.Name))
+		// Which of the user's projects is this folder? Asked before the
+		// prompt, so the prompt names the project as the Hub does.
+		projects, err := s.List(ctx)
+		if err != nil {
+			return "", err
+		}
+		here, found := projectForMarker(projects, m)
+		if !found {
+			return "", errMarkerNotAProject(m)
+		}
+		fmt.Fprintf(s.Out, "Work in %s? [Y/n] ", safe(here.Name))
 		answer, err := s.readLine()
 		if err != nil && err != io.EOF {
 			return "", fmt.Errorf("read input: %w", err)
 		}
 		answer = strings.TrimSpace(strings.ToLower(answer))
 		if answer == "" || answer == "y" || answer == "yes" {
-			if err := s.checkMarkerProject(ctx, m); err != nil {
-				return "", err
-			}
-			if err := s.Wire(s.Cwd, m, s.Creds.UserEmail, s.Creds.UserName); err != nil {
-				return "", err
-			}
-			fmt.Fprintln(s.Out, "ready")
-			return s.Cwd, nil
+			return s.rewire(m, here)
 		}
 		// Fall through to picker.
 	}
@@ -178,29 +186,54 @@ func (s *session) runInteractive(ctx context.Context) (string, error) {
 	return s.runPicker(ctx)
 }
 
-// checkMarkerProject refuses to re-wire a checkout whose marker does not name
-// one of the user's own Hub projects. The marker (.keyto/project.json) is a
-// file committed in the repo, and its org and repo become the git remote: a
-// marker pointing at another repo would send the user's pushes there. The
-// project list is the Hub's (the one the picker shows). The marker's org/repo
-// must be a listed project (GitHub names compare without case), and that
-// project must carry the marker's name, so "Work in X?" and the remote agree.
-// A list that cannot be read wires nothing; its error goes back as it is, so a
-// refused credential still leads to a new sign-in.
-func (s *session) checkMarkerProject(ctx context.Context, m *project.Marker) error {
-	projects, err := s.List(ctx)
-	if err != nil {
-		return err
-	}
+// projectForMarker finds the user's Hub project that a marker's org/repo
+// names. The marker (.keyto/project.json) is a file committed in the repo, so
+// it is only trusted to say WHICH of the user's own projects this folder is:
+// its org/repo must be one the Hub lists for the user (GitHub names compare
+// without case). A marker that names any other repo matches nothing.
+func projectForMarker(projects []hub.Project, m *project.Marker) (hub.Project, bool) {
 	for _, p := range projects {
-		if strings.EqualFold(p.Org, m.Org) && strings.EqualFold(p.Repo, m.Repo) && p.Name == m.Name {
-			return nil
+		if strings.EqualFold(p.Org, m.Org) && strings.EqualFold(p.Repo, m.Repo) {
+			return p, true
 		}
 	}
-	return fmt.Errorf("this folder's project marker names %s/%s as project %q, which is not one of your Hub projects, so the git remote was left unchanged. "+
+	return hub.Project{}, false
+}
+
+// errMarkerNotAProject says a marker names a repo that is not one of the
+// user's Hub projects, and what to do about it.
+func errMarkerNotAProject(m *project.Marker) error {
+	return fmt.Errorf("this folder's project marker names %s/%s, which is not one of your Hub projects, so the git remote was left unchanged. "+
 		"If you were added to the project just now, run the command again. Otherwise check .keyto/project.json against the project in the Hub, "+
 		"or run `keyto checkout` in an empty folder and pick the project from the list",
-		safe(m.Org), safe(m.Repo), safe(m.Name))
+		safe(m.Org), safe(m.Repo))
+}
+
+// rewire wires cwd as a checkout of proj, the Hub project the marker's repo
+// belongs to. The name, org and repo used are the Hub's, never the marker's
+// spelling, so the remote, the marker and what the user was shown agree. When
+// the marker differed (a rename in the Hub, or another letter case) it is
+// rewritten, and a changed name is pointed out.
+func (s *session) rewire(old *project.Marker, proj hub.Project) (string, error) {
+	if err := checkRepoNames(proj); err != nil {
+		return "", err
+	}
+	// The marker's hub URL is left as it is: the remote is built from the
+	// signed-in Hub, not from the marker.
+	m := &project.Marker{Name: proj.Name, Org: proj.Org, Repo: proj.Repo, HubURL: old.HubURL}
+	if *m != *old {
+		if err := s.WriteMarker(s.Cwd, m); err != nil {
+			return "", fmt.Errorf("write project marker: %w", err)
+		}
+		if old.Name != m.Name {
+			fmt.Fprintf(s.Out, "note: the Hub calls this project %s (the marker said %s); .keyto/project.json was updated\n", safe(m.Name), safe(old.Name))
+		}
+	}
+	if err := s.Wire(s.Cwd, m, s.Creds.UserEmail, s.Creds.UserName); err != nil {
+		return "", err
+	}
+	fmt.Fprintln(s.Out, "ready")
+	return s.Cwd, nil
 }
 
 // runPicker shows a numbered list of projects and lets the user pick one.

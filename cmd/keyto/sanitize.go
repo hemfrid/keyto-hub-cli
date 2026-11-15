@@ -22,10 +22,18 @@ func signedInLine(prefix, name, email string) string {
 // printError writes "keyto: <error>" for the user. An error can carry a tool's
 // output (git, npm), which may hold terminal control sequences a server sent.
 // Each line is stripped of them on its own, so a multi-line message keeps its
-// lines and its indentation.
+// lines and its indentation. Carriage returns are read as a terminal reads
+// them: one at the end of a line ("\r\n") is dropped, and one inside a line
+// (git's progress updates) starts the line over, so only the text after the
+// last one is kept.
 func printError(w io.Writer, err error) {
 	lines := strings.Split(err.Error(), "\n")
 	for i, line := range lines {
+		// A trailing "\r" is the first half of "\r\n", or a progress line's end.
+		line = strings.TrimRight(line, "\r")
+		if cr := strings.LastIndexByte(line, '\r'); cr >= 0 {
+			line = line[cr+1:]
+		}
 		lines[i] = sanitizeForTerminal(line, false)
 	}
 	fmt.Fprintln(w, "keyto:", strings.Join(lines, "\n"))

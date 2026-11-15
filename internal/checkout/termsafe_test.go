@@ -90,9 +90,12 @@ func TestClone_PrintsTheResultWithoutControlSequences(t *testing.T) {
 	}
 }
 
-func TestMarkerPrompt_PrintsTheMarkerNameWithoutControlSequences(t *testing.T) {
+func TestRewire_AHostileMarkerNameNeverReachesTheTerminalRaw(t *testing.T) {
+	// The marker's repo is one of the user's projects; its name is hostile.
+	// The prompt shows the Hub's name, and the note about the changed name
+	// shows the marker's old one without its control sequences.
 	var out bytes.Buffer
-	marker := &project.Marker{Name: hostileProject.Name, Org: "hemfrid", Repo: "x", HubURL: "https://hub.example.com"}
+	marker := &project.Marker{Name: hostileProject.Name, Org: "hemfrid", Repo: "acme-web", HubURL: "https://hub.example.com"}
 	d := checkout.Deps{
 		Creds:       makeCreds(),
 		List:        fakeList(twoProjects()),
@@ -104,16 +107,14 @@ func TestMarkerPrompt_PrintsTheMarkerNameWithoutControlSequences(t *testing.T) {
 		In:          strings.NewReader("y\n"),
 		Out:         &out,
 	}
-	// The prompt shows the name without control sequences. Answering yes then
-	// refuses: that marker is not one of the user's Hub projects.
-	_, err := checkout.Run(context.Background(), "", d)
-	if err == nil {
-		t.Fatal("want the marker refused")
+	if _, err := checkout.Run(context.Background(), "", d); err != nil {
+		t.Fatalf("unexpected error: %v", err)
 	}
-	assertTerminalSafe(t, "the refusal", err.Error())
-	assertTerminalSafe(t, "the marker prompt", out.String())
-	if !strings.Contains(out.String(), "Work in evilname?") {
-		t.Errorf("the readable name should remain; got %q", out.String())
+	assertTerminalSafe(t, "the output", out.String())
+	for _, want := range []string{"Work in acme-web?", "the marker said evilname"} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("want %q in %q", want, out.String())
+		}
 	}
 }
 
