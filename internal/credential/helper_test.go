@@ -281,6 +281,19 @@ func TestHelper_AnswersOnlyTheHubsOrigin(t *testing.T) {
 		{"https with the default port written out", hubURL, []string{"protocol=https", "host=hub.keytolabs.com:443"}, true},
 		{"a stored Hub URL with user info", "https://alice@hub.keytolabs.com", []string{"protocol=https", "host=hub.keytolabs.com"}, false},
 		{"user info in the request host", hubURL, []string{"protocol=https", "host=alice@hub.keytolabs.com"}, false},
+		// S1: a protocol that is not exactly http or https must not be glued into a
+		// URL: "https://hub.keytolabs.com#" + "://evil.example" parses as the Hub.
+		{"a protocol carrying the Hub URL and a fragment", hubURL, []string{"protocol=https://hub.keytolabs.com#", "host=evil.example"}, false},
+		{"a protocol carrying the Hub URL and a query", hubURL, []string{"protocol=https://hub.keytolabs.com?", "host=evil.example"}, false},
+		{"a protocol carrying the Hub URL and a path", hubURL, []string{"protocol=https://hub.keytolabs.com/", "host=evil.example"}, false},
+		{"a protocol with spaces around it", hubURL, []string{"protocol= https ", "host=hub.keytolabs.com"}, false},
+		{"the protocol in capitals", hubURL, []string{"protocol=HTTPS", "host=hub.keytolabs.com"}, true},
+		// S2: a host carrying a path, query, fragment or a space is never the Hub.
+		{"a host with a path", hubURL, []string{"protocol=https", "host=hub.keytolabs.com/x"}, false},
+		{"a host with a query", hubURL, []string{"protocol=https", "host=hub.keytolabs.com?x"}, false},
+		{"a host with a fragment", hubURL, []string{"protocol=https", "host=hub.keytolabs.com#x"}, false},
+		{"a host with a space", hubURL, []string{"protocol=https", "host=hub.keytolabs.com x"}, false},
+		{"a host with a backslash", hubURL, []string{"protocol=https", "host=hub.keytolabs.com\\x"}, false},
 	}
 	for _, tc := range cases {
 		creds := validCreds()

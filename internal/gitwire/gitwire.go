@@ -16,6 +16,10 @@ import (
 // git process.
 type Runner func(dir string, args ...string) error
 
+// ErrOtherHub is returned when the checkout's marker names a different Hub
+// than the one the user is signed in to.
+var ErrOtherHub = errors.New("this checkout's .keyto/project.json names a different Hub than the one you are signed in to, so the git remote and credential helper were left unchanged")
+
 // Wire configures a cloned repository to work with the Keyto Hub:
 //
 //  1. Points the "origin" remote at the Hub's git proxy.
@@ -49,10 +53,6 @@ type Runner func(dir string, args ...string) error
 //     names another host cannot send this checkout's pushes there.
 //
 // Otherwise nothing is run.
-// ErrOtherHub is returned when the checkout's marker names a different Hub
-// than the one the user is signed in to.
-var ErrOtherHub = errors.New("this checkout's .keyto/project.json names a different Hub than the one you are signed in to, so the git remote and credential helper were left unchanged")
-
 func Wire(run Runner, dir string, m *project.Marker, hubURL, email, name string) error {
 	if hubURL == "" {
 		return errors.New("not signed in to a Hub, so the git remote was left unchanged; run `keyto auth`")

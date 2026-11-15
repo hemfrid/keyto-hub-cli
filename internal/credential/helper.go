@@ -109,9 +109,16 @@ func parseAttrs(r io.Reader) map[string]string {
 // the request's protocol and host (with any port) make the same origin as
 // hubURL (huborigin: http(s) only, no user info, default ports filled in).
 func forHub(attrs map[string]string, hubURL string) bool {
-	host := attrs["host"]
-	if attrs["protocol"] == "" || host == "" || strings.ContainsAny(host, "/?#@\\ ") {
+	// The protocol must be exactly http or https before it goes into a URL: a
+	// protocol like "https://<hub>#" would otherwise turn any host into the
+	// Hub's URL with a fragment.
+	protocol := strings.ToLower(attrs["protocol"])
+	if protocol != "https" && protocol != "http" {
 		return false
 	}
-	return huborigin.Same(attrs["protocol"]+"://"+host, hubURL)
+	host := attrs["host"]
+	if host == "" || strings.ContainsAny(host, "/?#@\\ ") {
+		return false
+	}
+	return huborigin.Same(protocol+"://"+host, hubURL)
 }
