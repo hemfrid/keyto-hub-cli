@@ -426,6 +426,10 @@ func runBootImpl(ctx context.Context, args []string) error {
 			return rerr
 		}
 		err = bootRun(ctx, bootDeps(ctx, cwd, flags, creds), flags)
+	} else if isNpmLaneRefused(err) {
+		// npm says the Hub's registry refused the token, but the Hub did not
+		// confirm it, so nothing was signed in again. Say what to try.
+		err = fmt.Errorf("%w\n  keyto did not sign in again: the Hub did not confirm that your credential is refused. If this persists, run `keyto auth`.", err)
 	}
 	return err
 }

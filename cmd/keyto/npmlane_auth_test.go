@@ -282,6 +282,26 @@ func TestBoot_NpmLaneHint_HubAcceptsTheCredential_NoReauth(t *testing.T) {
 	if *probes != 1 || *reauthCalls != 0 || *runs != 1 {
 		t.Errorf("probes=%d reauth=%d runs=%d, want 1, 0, 1", *probes, *reauthCalls, *runs)
 	}
+	// The user is told what to do if the token really is stale.
+	if !strings.Contains(err.Error(), "run `keyto auth`") {
+		t.Errorf("want the keyto auth tip, got: %v", err)
+	}
+}
+
+func TestBoot_OtherFailuresGetNoAuthTip(t *testing.T) {
+	reauthStubs(t, mintedCreds())
+	validCreds(t)
+	stubProbe(t, nil)
+	orig := bootRun
+	bootRun = func(ctx context.Context, d boot.Deps, f boot.Flags) error {
+		return errors.New("npm install: exit status 1")
+	}
+	t.Cleanup(func() { bootRun = orig })
+
+	err := runBootImpl(context.Background(), nil)
+	if err == nil || strings.Contains(err.Error(), "keyto auth") {
+		t.Errorf("an ordinary failure must come back unchanged, got: %v", err)
+	}
 }
 
 func TestBoot_NpmLaneHint_ProbeFailsAnotherWay_NoReauth(t *testing.T) {

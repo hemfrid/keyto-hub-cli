@@ -33,11 +33,43 @@ func assertTerminalSafe(t *testing.T, what, text string) {
 	}
 }
 
-func TestPickerAndClone_PrintHubTextWithoutControlSequences(t *testing.T) {
+func TestPicker_PrintsHubTextWithoutControlSequences_AndRefusesTheName(t *testing.T) {
 	var out bytes.Buffer
+	cloned := false
 	d := checkout.Deps{
 		Creds:       makeCreds(),
 		List:        fakeList([]hub.Project{hostileProject}),
+		Clone:       func(repoURL, dir string) error { cloned = true; return nil },
+		Wire:        noopWire,
+		ReadMarker:  fakeReadMarker(nil),
+		WriteMarker: noopWriteMarker,
+		Cwd:         "/tmp/cwd",
+		In:          strings.NewReader("1\n\n"), // pick it
+		Out:         &out,
+	}
+	_, err := checkout.Run(context.Background(), "", d)
+	// The list is shown without control sequences; the name itself is then
+	// refused, because it is not a plain folder name.
+	if err == nil || cloned {
+		t.Fatalf("want the name refused and nothing cloned, got err=%v cloned=%v", err, cloned)
+	}
+	assertTerminalSafe(t, "the picker output", out.String())
+	assertTerminalSafe(t, "the refusal", err.Error())
+	for _, want := range []string{"evilname", "(owner fake line)"} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("the readable text %q should remain; got %q", want, out.String())
+		}
+	}
+}
+
+// A project whose name is fine but whose org, repo and role are not.
+var hostileOrgRepo = hub.Project{Name: "acme-web", Org: hostileProject.Org, Repo: hostileProject.Repo, Role: hostileProject.Role}
+
+func TestClone_PrintsTheResultWithoutControlSequences(t *testing.T) {
+	var out bytes.Buffer
+	d := checkout.Deps{
+		Creds:       makeCreds(),
+		List:        fakeList([]hub.Project{hostileOrgRepo}),
 		Clone:       func(repoURL, dir string) error { return nil },
 		Wire:        noopWire,
 		ReadMarker:  fakeReadMarker(nil),
@@ -50,7 +82,7 @@ func TestPickerAndClone_PrintHubTextWithoutControlSequences(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	assertTerminalSafe(t, "the picker and clone output", out.String())
-	for _, want := range []string{"evilname", "(owner fake line)", "Cloned evilname into"} {
+	for _, want := range []string{"1. acme-web (owner fake line)", "Checkout directory [/tmp/cwd/acme-web]", "Cloned acme-web into /tmp/cwd/acme-web"} {
 		if !strings.Contains(out.String(), want) {
 			t.Errorf("the readable text %q should remain; got %q", want, out.String())
 		}
@@ -112,7 +144,7 @@ func TestAdopt_PrintsOrgRepoAndNameWithoutControlSequences(t *testing.T) {
 func TestCloneFailure_ErrorNamesTheRepoWithoutControlSequences(t *testing.T) {
 	d := checkout.Deps{
 		Creds:       makeCreds(),
-		List:        fakeList([]hub.Project{hostileProject}),
+		List:        fakeList([]hub.Project{hostileOrgRepo}),
 		Clone:       func(repoURL, dir string) error { return errors.New("exit status 128") },
 		Wire:        noopWire,
 		ReadMarker:  fakeReadMarker(nil),

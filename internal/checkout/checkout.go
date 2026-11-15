@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
@@ -327,9 +328,35 @@ func findProject(projects []hub.Project, name string) (hub.Project, bool) {
 	return hub.Project{}, false
 }
 
+// folderNameRe is what a project name must look like before it is used as a
+// folder: letters, digits, dot, underscore and hyphen, starting with a letter
+// or digit, at most 100 long. It is wider than the platform's current name
+// rule (lowercase, 3 to 30) on purpose: projects created under older rules
+// must still check out. What matters here is that it is a single path
+// element on every OS.
+var folderNameRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$`)
+
+// windowsDeviceRe matches names Windows reserves, with or without an
+// extension ("con", "NUL.txt", "com1").
+var windowsDeviceRe = regexp.MustCompile(`(?i)^(con|prn|aux|nul|com[0-9]|lpt[0-9])(\..*)?$`)
+
+// plainFolderName reports whether name is safe to join onto a directory: one
+// path element, no separators of any OS, no "." or "..", no drive prefix, no
+// control characters, not a Windows device name, no trailing dot.
+func plainFolderName(name string) bool {
+	return folderNameRe.MatchString(name) &&
+		!strings.HasSuffix(name, ".") &&
+		!windowsDeviceRe.MatchString(name) &&
+		filepath.Base(name) == name
+}
+
 // promptDir prints a prompt and reads the checkout directory.
 // If the user presses Enter without typing, the default (<cwd>/<name>) is used.
 func (s *session) promptDir(name string) (string, error) {
+	// The name is the Hub's text and is about to become a folder under cwd.
+	if !plainFolderName(name) {
+		return "", fmt.Errorf("the Hub's name for this project (%q) can't be used as a folder name; nothing was cloned", safe(name))
+	}
 	defaultDir := filepath.Join(s.Cwd, name)
 	fmt.Fprintf(s.Out, "Checkout directory [%s]: ", safe(defaultDir))
 	line, err := s.readLine()
