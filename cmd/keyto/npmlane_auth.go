@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/hemfrid/keyto-hub-cli/internal/config"
 	"github.com/hemfrid/keyto-hub-cli/internal/hub"
@@ -112,27 +113,75 @@ func npmInstallError(err error, output, registry string) error {
 	return &npmLaneRefused{err: err}
 }
 
+// probeTimeout bounds the probe. It runs in front of the user, after a failed
+// install: a Hub that never answers must not stall `keyto start`.
+var probeTimeout = 10 * time.Second
+
 // probeHubCredential asks the Hub one authenticated question with the stored
-// credential (the project list). A typed 401 back means the Hub itself refuses
-// that credential. It is a package var so tests can stub it.
+// credential (the project list), within probeTimeout. A typed 401 back means
+// the Hub itself refuses that credential; nil means it accepts it. It is a
+// package var so tests can stub it.
 var probeHubCredential = func(ctx context.Context) error {
 	creds, err := config.Load()
 	if err != nil {
 		return fmt.Errorf("load credentials: %w", err)
 	}
+	ctx, cancel := context.WithTimeout(ctx, probeTimeout)
+	defer cancel()
 	c := &hub.Client{BaseURL: creds.HubURL, Credential: creds.Credential}
 	_, err = c.ListProjects(ctx)
 	return err
 }
 
-// hubRefusesStoredCredential is the decision behind a re-login in `keyto
-// start`: a 401 the Hub answered directly, or the npm lane hint confirmed by
-// the Hub's own 401 on a probe. The probe runs only for the hint.
-func hubRefusesStoredCredential(ctx context.Context, err error) bool {
+// laneVerdict is what `keyto start` does about a failed run.
+type laneVerdict int
+
+const (
+	// leaveAsIs: not a sign-in problem; the error goes back unchanged.
+	leaveAsIs laneVerdict = iota
+	// signInAgain: the Hub refuses the stored credential.
+	signInAgain
+	// hubAcceptsCredential: npm named a 401 from the Hub's registry, but the
+	// Hub accepts the stored credential.
+	hubAcceptsCredential
+	// hubDidNotAnswer: npm named a 401, and the Hub could not be asked.
+	hubDidNotAnswer
+)
+
+// judgeBootError decides whether a failed `keyto start` run is a sign-in
+// problem. A 401 the Hub answered directly is one. The npm lane hint is one
+// only when the Hub confirms it on a probe, which runs for the hint alone;
+// probeErr is the probe's answer when it ran.
+func judgeBootError(ctx context.Context, err error) (verdict laneVerdict, probeErr error) {
 	if isAuthError(err) {
-		return true
+		return signInAgain, nil
 	}
-	return isNpmLaneRefused(err) && hub.IsUnauthorized(probeHubCredential(ctx))
+	if !isNpmLaneRefused(err) {
+		return leaveAsIs, nil
+	}
+	probeErr = probeHubCredential(ctx)
+	switch {
+	case hub.IsUnauthorized(probeErr):
+		return signInAgain, nil
+	case probeErr == nil:
+		return hubAcceptsCredential, nil
+	default:
+		return hubDidNotAnswer, probeErr
+	}
+}
+
+// unconfirmedLaneError words a failed install whose 401 the Hub did not
+// confirm. npm's own error stays in the chain; the hint's "refused the stored
+// credential" wording is dropped, because the Hub did not say that.
+func unconfirmedLaneError(err error, verdict laneVerdict, probeErr error) error {
+	var hint *npmLaneRefused
+	if !errors.As(err, &hint) {
+		return err
+	}
+	if verdict == hubAcceptsCredential {
+		return fmt.Errorf("the Hub accepts your sign-in; npm install failed: %w\n  npm's output above shows the cause. If it names a 401 from the Hub's npm registry, check the token line for that registry in ~/.npmrc", hint.err)
+	}
+	return fmt.Errorf("npm install failed: %w\n  npm's output names a 401 from the Hub's npm registry, but keyto could not check your sign-in with the Hub (%s), so it did not sign in again. If this persists, run `keyto auth`", hint.err, sanitizeForTerminal(probeErr.Error(), false))
 }
 
 // npmInstallArgs are npm's arguments for the install. With the Hub's registry

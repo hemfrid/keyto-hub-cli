@@ -276,15 +276,24 @@ func TestBoot_NpmLaneHint_HubAcceptsTheCredential_NoReauth(t *testing.T) {
 	probes := stubProbe(t, nil)
 
 	err := runBootImpl(context.Background(), nil)
-	if err == nil || !isNpmLaneRefused(err) {
-		t.Fatalf("expected npm's error to be returned, got: %v", err)
+	if err == nil {
+		t.Fatal("expected npm's error to be returned")
 	}
 	if *probes != 1 || *reauthCalls != 0 || *runs != 1 {
 		t.Errorf("probes=%d reauth=%d runs=%d, want 1, 0, 1", *probes, *reauthCalls, *runs)
 	}
-	// The user is told what to do if the token really is stale.
-	if !strings.Contains(err.Error(), "run `keyto auth`") {
-		t.Errorf("want the keyto auth tip, got: %v", err)
+	// The Hub said the credential is fine, so the message must not say the
+	// registry refused it, and must not send the user to sign in again.
+	msg := err.Error()
+	for _, bad := range []string{"refused", "keyto auth"} {
+		if strings.Contains(msg, bad) {
+			t.Errorf("the message must not say %q: %q", bad, msg)
+		}
+	}
+	for _, want := range []string{"the Hub accepts your sign-in", "npm install failed", "exit status 1"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("want %q in %q", want, msg)
+		}
 	}
 }
 
@@ -309,18 +318,66 @@ func TestBoot_NpmLaneHint_ProbeFailsAnotherWay_NoReauth(t *testing.T) {
 		errors.New("dial tcp: connection refused"),
 		&hub.StatusError{Op: "list-projects", StatusCode: 503},
 		errors.New("list-projects failed: 401 Unauthorized"), // text is not a status
+		errors.New("probe \x1b[2Jwith an escape"),
 	} {
 		reauthCalls := reauthStubs(t, mintedCreds())
 		validCreds(t)
 		runs := laneHintBoot(t)
 		stubProbe(t, answer)
 
-		if err := runBootImpl(context.Background(), nil); err == nil {
+		err := runBootImpl(context.Background(), nil)
+		if err == nil {
 			t.Fatal("expected npm's error to be returned")
 		}
 		if *reauthCalls != 0 || *runs != 1 {
 			t.Errorf("probe answer %v: reauth=%d runs=%d, want 0 and 1", answer, *reauthCalls, *runs)
 		}
+		// Unknown either way: say so, and what to do if it persists.
+		msg := err.Error()
+		for _, want := range []string{"could not check your sign-in with the Hub", "run `keyto auth`", "exit status 1"} {
+			if !strings.Contains(msg, want) {
+				t.Errorf("probe answer %v: want %q in %q", answer, want, msg)
+			}
+		}
+		if strings.Contains(msg, "the Hub accepts your sign-in") || strings.Contains(msg, "\x1b") {
+			t.Errorf("probe answer %v: wrong message: %q", answer, msg)
+		}
+	}
+}
+
+func TestProbeHubCredential_AHubThatNeverAnswersTimesOut(t *testing.T) {
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-release // hang until the test is over
+	}))
+	defer srv.Close()
+	defer close(release)
+	t.Setenv("KEYTO_HOME", t.TempDir())
+	if err := config.Save(&config.Creds{Credential: "tok", HubURL: srv.URL, ExpiresAt: time.Now().Add(time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+	orig := probeTimeout
+	probeTimeout = 50 * time.Millisecond
+	t.Cleanup(func() { probeTimeout = orig })
+
+	done := make(chan error, 1)
+	go func() { done <- probeHubCredential(context.Background()) }()
+	select {
+	case err := <-done:
+		if err == nil || hub.IsUnauthorized(err) {
+			t.Errorf("want a non-401 error from the timeout, got: %v", err)
+		}
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Errorf("want the deadline in the chain, got: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the probe did not return: a hung Hub would stall `keyto start`")
+	}
+}
+
+func TestProbeTimeout_IsShort(t *testing.T) {
+	if probeTimeout <= 0 || probeTimeout > 15*time.Second {
+		t.Errorf("probeTimeout = %v; it runs in front of the user and must stay short", probeTimeout)
 	}
 }
 

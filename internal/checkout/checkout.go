@@ -350,14 +350,42 @@ func plainFolderName(name string) bool {
 		filepath.Base(name) == name
 }
 
+// underDir reports whether path is strictly inside base: not base itself, not
+// above it, not beside it, not on another root.
+func underDir(base, path string) bool {
+	rel, err := filepath.Rel(base, path)
+	if err != nil || rel == "." || filepath.IsAbs(rel) {
+		return false
+	}
+	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
+// folderNameOK is the name rule defaultCheckoutDir applies. It is a variable so
+// a test can switch it off and show the join check holds on its own.
+var folderNameOK = plainFolderName
+
+// defaultCheckoutDir is the folder a project is cloned into by default,
+// <cwd>/<name>. The name is the Hub's text, so it is checked twice: it has to
+// be a plain folder name, and the joined path has to land inside cwd.
+func defaultCheckoutDir(cwd, name string) (string, error) {
+	refused := fmt.Errorf("the Hub's name for this project (%q) can't be used as a folder name; nothing was cloned", safe(name))
+	if !folderNameOK(name) {
+		return "", refused
+	}
+	dir := filepath.Join(cwd, name)
+	if !underDir(cwd, dir) {
+		return "", refused
+	}
+	return dir, nil
+}
+
 // promptDir prints a prompt and reads the checkout directory.
 // If the user presses Enter without typing, the default (<cwd>/<name>) is used.
 func (s *session) promptDir(name string) (string, error) {
-	// The name is the Hub's text and is about to become a folder under cwd.
-	if !plainFolderName(name) {
-		return "", fmt.Errorf("the Hub's name for this project (%q) can't be used as a folder name; nothing was cloned", safe(name))
+	defaultDir, err := defaultCheckoutDir(s.Cwd, name)
+	if err != nil {
+		return "", err
 	}
-	defaultDir := filepath.Join(s.Cwd, name)
 	fmt.Fprintf(s.Out, "Checkout directory [%s]: ", safe(defaultDir))
 	line, err := s.readLine()
 	if err != nil && err != io.EOF {

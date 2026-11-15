@@ -417,19 +417,17 @@ func runBootImpl(ctx context.Context, args []string) error {
 	// network-touching step in boot), re-auth in the browser and retry with the
 	// freshly-minted token threaded through, exactly once. A failed npm install
 	// that names a 401 from the Hub's npm registry is only a hint (npm's output
-	// is not the Hub's word), so the Hub is asked first: see
-	// hubRefusesStoredCredential.
+	// is not the Hub's word), so the Hub is asked first: see judgeBootError.
 	err = bootRun(ctx, bootDeps(ctx, cwd, flags, nil), flags)
-	if hubRefusesStoredCredential(ctx, err) {
+	switch verdict, probeErr := judgeBootError(ctx, err); verdict {
+	case signInAgain:
 		creds, rerr := reauth(ctx)
 		if rerr != nil {
 			return rerr
 		}
 		err = bootRun(ctx, bootDeps(ctx, cwd, flags, creds), flags)
-	} else if isNpmLaneRefused(err) {
-		// npm says the Hub's registry refused the token, but the Hub did not
-		// confirm it, so nothing was signed in again. Say what to try.
-		err = fmt.Errorf("%w\n  keyto did not sign in again: the Hub did not confirm that your credential is refused. If this persists, run `keyto auth`.", err)
+	case hubAcceptsCredential, hubDidNotAnswer:
+		err = unconfirmedLaneError(err, verdict, probeErr)
 	}
 	return err
 }
