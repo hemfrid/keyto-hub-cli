@@ -17,10 +17,10 @@ import (
 	"bufio"
 	"fmt"
 	"io"
-	"net/url"
 	"strings"
 
 	"github.com/hemfrid/keyto-hub-cli/internal/config"
+	"github.com/hemfrid/keyto-hub-cli/internal/huborigin"
 )
 
 const (
@@ -106,12 +106,12 @@ func parseAttrs(r io.Reader) map[string]string {
 }
 
 // forHub reports whether a git credential request is for the Hub at hubURL:
-// its protocol is hubURL's scheme and its host (with any port) is hubURL's
-// host, both compared case-insensitively.
+// the request's protocol and host (with any port) make the same origin as
+// hubURL (huborigin: http(s) only, no user info, default ports filled in).
 func forHub(attrs map[string]string, hubURL string) bool {
-	u, err := url.Parse(hubURL)
-	if err != nil || u.Scheme == "" || u.Host == "" || u.User != nil {
+	host := attrs["host"]
+	if attrs["protocol"] == "" || host == "" || strings.ContainsAny(host, "/?#@\\ ") {
 		return false
 	}
-	return strings.EqualFold(attrs["protocol"], u.Scheme) && strings.EqualFold(attrs["host"], u.Host)
+	return huborigin.Same(attrs["protocol"]+"://"+host, hubURL)
 }

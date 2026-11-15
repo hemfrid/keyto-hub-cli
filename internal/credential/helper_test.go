@@ -277,6 +277,10 @@ func TestHelper_AnswersOnlyTheHubsOrigin(t *testing.T) {
 		{"an http Hub: https is another origin", "http://127.0.0.1:3000", []string{"protocol=https", "host=127.0.0.1:3000"}, false},
 		{"not signed in", "", []string{"protocol=https", "host=hub.keytolabs.com"}, false},
 		{"an unparseable Hub URL", "://bad", []string{"protocol=https", "host=hub.keytolabs.com"}, false},
+		{"http on the https default port", hubURL, []string{"protocol=http", "host=hub.keytolabs.com:443"}, false},
+		{"https with the default port written out", hubURL, []string{"protocol=https", "host=hub.keytolabs.com:443"}, true},
+		{"a stored Hub URL with user info", "https://alice@hub.keytolabs.com", []string{"protocol=https", "host=hub.keytolabs.com"}, false},
+		{"user info in the request host", hubURL, []string{"protocol=https", "host=alice@hub.keytolabs.com"}, false},
 	}
 	for _, tc := range cases {
 		creds := validCreds()

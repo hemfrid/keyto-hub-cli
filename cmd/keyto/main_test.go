@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/hemfrid/keyto-hub-cli/internal/gitwire"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -993,5 +994,17 @@ func TestCloneArgs_ADirectoryStartingWithADashIsNeverAnOption(t *testing.T) {
 		if n < 4 || args[n-4] != "clone" || args[n-3] != "--" || args[n-1] != dir {
 			t.Errorf("dir %q: want [... clone -- <url> %q], got %q", dir, dir, args)
 		}
+	}
+}
+
+// The checkout closure passes the SIGNED-IN Hub to gitwire.Wire, never the
+// marker's own hub_url: a marker naming another Hub is refused before git runs.
+func TestCheckoutDeps_WireRefusesAMarkerFromAnotherHub(t *testing.T) {
+	creds := &config.Creds{HubURL: "https://hub-a.example.com", Credential: "tok"}
+	d := checkoutDeps(context.Background(), creds, t.TempDir())
+	m := &project.Marker{Name: "acme-web", Org: "hemfrid", Repo: "acme-web", HubURL: "https://hub-b.example.com"}
+	err := d.Wire(t.TempDir(), m, "a@example.com", "A")
+	if !errors.Is(err, gitwire.ErrOtherHub) {
+		t.Fatalf("want gitwire.ErrOtherHub, got: %v", err)
 	}
 }

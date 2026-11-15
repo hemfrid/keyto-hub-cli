@@ -198,3 +198,53 @@ func TestWire_SameOriginWrittenDifferently_WiresTheSignedInHub(t *testing.T) {
 		assertCall(t, calls[1], "/repo", []string{"config", "--replace-all", "credential.https://hub.example.com.helper", ""})
 	}
 }
+
+// The mutants that survived 73e20b4c: http on the https default port, and user
+// info on the right host. Both are other origins.
+func TestWire_RefusesHTTPOn443AndUserInfo(t *testing.T) {
+	for _, markerHub := range []string{"http://hub.example.com:443", "https://alice@hub.example.com"} {
+		var calls []call
+		m := &project.Marker{Name: "acme-web", Org: "hemfrid", Repo: "acme-web", HubURL: markerHub}
+		err := gitwire.Wire(makeFakeRunner(&calls, -1), "/repo", m, "https://hub.example.com", "a@example.com", "A")
+		if !errors.Is(err, gitwire.ErrOtherHub) || len(calls) != 0 {
+			t.Errorf("marker hub_url %q: err=%v calls=%d, want ErrOtherHub and no git call", markerHub, err, len(calls))
+		}
+	}
+}
+
+// The refusal says what to do.
+func TestWire_TheMismatchErrorSaysWhatToDo(t *testing.T) {
+	var calls []call
+	m := &project.Marker{Name: "acme-web", Org: "hemfrid", Repo: "acme-web", HubURL: "https://evil.example"}
+	err := gitwire.Wire(makeFakeRunner(&calls, -1), "/repo", m, "https://hub.example.com", "a@example.com", "A")
+	if err == nil || !strings.Contains(err.Error(), "keyto auth") || !strings.Contains(err.Error(), "hub_url") {
+		t.Errorf("want guidance naming hub_url and keyto auth, got: %v", err)
+	}
+}
+
+// A stored Hub URL that is set but unusable is not "not signed in".
+func TestWire_AMalformedStoredHubURLIsNotNotSignedIn(t *testing.T) {
+	for _, stored := range []string{"https://alice@hub.example.com", "ftp://hub.example.com", "hub.example.com"} {
+		var calls []call
+		m := &project.Marker{Name: "acme-web", Org: "hemfrid", Repo: "acme-web", HubURL: stored}
+		err := gitwire.Wire(makeFakeRunner(&calls, -1), "/repo", m, stored, "a@example.com", "A")
+		if err == nil || len(calls) != 0 {
+			t.Fatalf("stored %q: err=%v calls=%d, want an error and no git call", stored, err, len(calls))
+		}
+		if strings.Contains(err.Error(), "not signed in") || !strings.Contains(err.Error(), "keyto auth") {
+			t.Errorf("stored %q: want a 'stored Hub URL' error with keyto auth, got: %v", stored, err)
+		}
+	}
+}
+
+// A stored Hub URL with a trailing slash gives the same remote and the same
+// credential key as one without.
+func TestWire_ATrailingSlashOnTheStoredHubURL(t *testing.T) {
+	var calls []call
+	m := &project.Marker{Name: "acme-web", Org: "hemfrid", Repo: "acme-web", HubURL: "https://hub.example.com"}
+	if err := gitwire.Wire(makeFakeRunner(&calls, -1), "/repo", m, "https://hub.example.com/", "a@example.com", "A"); err != nil {
+		t.Fatal(err)
+	}
+	assertCall(t, calls[0], "/repo", []string{"remote", "set-url", "origin", "https://hub.example.com/git/hemfrid/acme-web.git"})
+	assertCall(t, calls[1], "/repo", []string{"config", "--replace-all", "credential.https://hub.example.com.helper", ""})
+}

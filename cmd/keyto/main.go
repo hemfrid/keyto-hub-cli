@@ -839,7 +839,7 @@ func runShellInit(args []string) error {
 func cloneArgs(hubURL, exe, repoURL, dir string) []string {
 	args := []string{}
 	if hubURL != "" {
-		key := fmt.Sprintf("credential.%s.helper", hubURL)
+		key := fmt.Sprintf("credential.%s.helper", strings.TrimRight(hubURL, "/"))
 		args = append(args,
 			"-c", key+"=",
 			"-c", key+"="+helperCommand(exe),
