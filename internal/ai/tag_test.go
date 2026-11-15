@@ -21,6 +21,22 @@ var hostileBundleTags = []string{
 	"main",
 	"e394b3f7b87f5bd19cae55f21a95d1357549783d",
 	"v0.2.0‮",
+	// Whitespace around a valid tag.
+	" v0.2.0",
+	"v0.2.0 ",
+	"\tv0.2.0",
+	"v0.2.0\t",
+	"v0.2.0\n",
+	"v0.2.0\u00a0",
+	" rc/1.3.0-1",
+	"rc/1.3.0-1 ",
+	"rc/ 1.3.0-1",
+	// Digits that are not ASCII 0-9.
+	"v\uff11.2.3",         // fullwidth 1
+	"v1.\u0662.3",         // Arabic-Indic 2
+	"v1.2.\u0969",         // Devanagari 3
+	"rc/1.3.0-\uff11",     // fullwidth 1 in the candidate number
+	"rc/\U0001d7cf.3.0-1", // mathematical bold 1
 }
 
 func TestValidBundleTag(t *testing.T) {

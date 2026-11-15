@@ -15,6 +15,7 @@ import (
 	"github.com/hemfrid/keyto-hub-cli/internal/config"
 	"github.com/hemfrid/keyto-hub-cli/internal/hub"
 	"github.com/hemfrid/keyto-hub-cli/internal/project"
+	"github.com/hemfrid/keyto-hub-cli/internal/termsafe"
 )
 
 // Deps holds all injectable dependencies for Run.  Each field is a function or
@@ -147,7 +148,7 @@ func (s *session) runInteractive(ctx context.Context) (string, error) {
 
 	if m != nil {
 		// Prompt the user whether to work in the current project.
-		fmt.Fprintf(s.Out, "Work in %s? [Y/n] ", m.Name)
+		fmt.Fprintf(s.Out, "Work in %s? [Y/n] ", safe(m.Name))
 		answer, err := s.readLine()
 		if err != nil && err != io.EOF {
 			return "", fmt.Errorf("read input: %w", err)
@@ -179,7 +180,7 @@ func (s *session) runPicker(ctx context.Context) (string, error) {
 
 	fmt.Fprintln(s.Out, "Your projects:")
 	for i, p := range projects {
-		fmt.Fprintf(s.Out, "  %d. %s (%s)\n", i+1, p.Name, p.Role)
+		fmt.Fprintf(s.Out, "  %d. %s (%s)\n", i+1, safe(p.Name), safe(p.Role))
 	}
 	fmt.Fprintf(s.Out, "Select a project [1-%d]: ", len(projects))
 
@@ -226,7 +227,7 @@ func (s *session) maybeAdopt(proj hub.Project) (dir string, adopted bool, err er
 		return "", false, nil
 	}
 
-	fmt.Fprintf(s.Out, "This folder is already a checkout of %s/%s. Use it? [Y/n] ", proj.Org, proj.Repo)
+	fmt.Fprintf(s.Out, "This folder is already a checkout of %s/%s. Use it? [Y/n] ", safe(proj.Org), safe(proj.Repo))
 	answer, rerr := s.readLine()
 	if rerr != nil && rerr != io.EOF {
 		return "", false, fmt.Errorf("read input: %w", rerr)
@@ -248,7 +249,7 @@ func (s *session) maybeAdopt(proj hub.Project) (dir string, adopted bool, err er
 	if err := s.Wire(s.Cwd, m, s.Creds.UserEmail, s.Creds.UserName); err != nil {
 		return "", false, err
 	}
-	fmt.Fprintf(s.Out, "Adopted existing checkout of %s in %s\n", proj.Name, s.Cwd)
+	fmt.Fprintf(s.Out, "Adopted existing checkout of %s in %s\n", safe(proj.Name), safe(s.Cwd))
 	return s.Cwd, true, nil
 }
 
@@ -291,7 +292,7 @@ func (s *session) cloneAndWire(proj hub.Project, dir string) (string, error) {
 	repoURL := remoteURL(proj, s.Creds.HubURL)
 
 	if err := s.Clone(repoURL, dir); err != nil {
-		return "", fmt.Errorf("clone %s: %w", repoURL, err)
+		return "", fmt.Errorf("clone %s: %w", safe(repoURL), err)
 	}
 
 	m := &project.Marker{
@@ -307,7 +308,7 @@ func (s *session) cloneAndWire(proj hub.Project, dir string) (string, error) {
 	if err := s.Wire(dir, m, s.Creds.UserEmail, s.Creds.UserName); err != nil {
 		return "", err
 	}
-	fmt.Fprintf(s.Out, "Cloned %s into %s\n", proj.Name, dir)
+	fmt.Fprintf(s.Out, "Cloned %s into %s\n", safe(proj.Name), safe(dir))
 	return dir, nil
 }
 
@@ -330,7 +331,7 @@ func findProject(projects []hub.Project, name string) (hub.Project, bool) {
 // If the user presses Enter without typing, the default (<cwd>/<name>) is used.
 func (s *session) promptDir(name string) (string, error) {
 	defaultDir := filepath.Join(s.Cwd, name)
-	fmt.Fprintf(s.Out, "Checkout directory [%s]: ", defaultDir)
+	fmt.Fprintf(s.Out, "Checkout directory [%s]: ", safe(defaultDir))
 	line, err := s.readLine()
 	if err != nil && err != io.EOF {
 		return "", fmt.Errorf("read input: %w", err)
@@ -355,3 +356,9 @@ func (s *session) readLine() (string, error) {
 	}
 	return line, err
 }
+
+// safe strips terminal control sequences from text that is about to be
+// printed. Project names, orgs, repos and roles are the Hub's text, the marker
+// name comes from a file committed in the repo, and the directories shown are
+// built from those names.
+func safe(s string) string { return termsafe.Sanitize(s, false) }

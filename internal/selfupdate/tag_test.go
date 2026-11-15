@@ -32,6 +32,18 @@ var hostileTags = []string{
 	"V0.2.0",
 	"v0.2.0‮",
 	"v1234567.0.0",
+	// Whitespace around a valid tag.
+	"v0.2.0 ",
+	"\tv0.2.0",
+	"v0.2.0\t",
+	"v0.2.0\r",
+	"v0.2.0\u00a0",
+	"v 0.2.0",
+	// Digits that are not ASCII 0-9.
+	"v\uff11.2.3",     // fullwidth 1
+	"v1.\u0662.3",     // Arabic-Indic 2
+	"v1.2.\u0969",     // Devanagari 3
+	"v\U0001d7cf.2.3", // mathematical bold 1
 }
 
 func latestServer(t *testing.T, tag string, downloads *int32) *httptest.Server {

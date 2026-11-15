@@ -32,6 +32,9 @@ func TestSanitize_PlainMode(t *testing.T) {
 		{"nF escape (charset select)", "a\x1b(0b", "ab"},
 		{"lone ESC at the end", "a\x1b", "a"},
 		{"bidi override U+202E", "abc‮def", "abcdef"},
+		{"bidi embeddings and overrides U+202A to U+202D", "a\u202ab\u202bc\u202cd\u202de", "abcde"},
+		{"left-to-right and right-to-left marks U+200E, U+200F", "a\u200eb\u200fc", "abc"},
+		{"an RLO-wrapped file name reads in its stored order", "invoice_\u202egnp.exe", "invoice_gnp.exe"},
 		{"bidi isolates U+2066 to U+2069", "a⁦b⁧c⁨d⁩e", "abcde"},
 		{"zero-width space", "sk-live-12​3456", "sk-live-123456"},
 		{"byte order mark", "\xef\xbb\xbfhello", "hello"},
@@ -71,6 +74,7 @@ func TestSanitize_KeepColour_AllowsOnlyListedSGR(t *testing.T) {
 		{"non-SGR CSI is still dropped", "\x1b[2Jx", "x"},
 		{"OSC is still dropped", "\x1b]52;c;AAAA\x07x", "x"},
 		{"newlines still become spaces", "\x1b[31ma\nb", "\x1b[31ma b\x1b[0m"},
+		{"bidi embeddings, overrides and marks are dropped with colour kept", "\x1b[32ma\u202a\u202b\u202c\u202d\u200e\u200fb", "\x1b[32mab\x1b[0m"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

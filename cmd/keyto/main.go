@@ -908,7 +908,7 @@ func runAuth(args []string) error {
 	hub := hubURL()
 
 	if existing, err := config.Load(); err == nil && reuseCredential(existing, hub, force) {
-		fmt.Printf("Already authenticated as %s (%s).\n", existing.UserName, existing.UserEmail)
+		fmt.Println(signedInLine("Already authenticated as", existing.UserName, existing.UserEmail) + ".")
 		if !existing.ExpiresAt.IsZero() {
 			fmt.Printf("Credential valid until %s.\n", existing.ExpiresAt.Local().Format("2006-01-02 15:04 MST"))
 		}
@@ -932,7 +932,7 @@ func runAuth(args []string) error {
 	}); err != nil {
 		return fmt.Errorf("save credentials: %w", err)
 	}
-	fmt.Printf("Authenticated as %s (%s)\n", tr.UserName, tr.UserEmail)
+	fmt.Println(signedInLine("Authenticated as", tr.UserName, tr.UserEmail))
 	return nil
 }
 
