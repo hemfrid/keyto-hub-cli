@@ -223,7 +223,7 @@ type setEnvValuesResponse struct {
 // values. Only those decoded fields are kept, never the raw body.
 type SetEnvValuesError struct {
 	StatusCode int
-	Status     string   // e.g. "409 Conflict"
+	Status     string   // e.g. "409 Conflict": the code and Go's own text for it, never the server's
 	Code       string   // machine code, e.g. "secret_recently_deleted"; else the body's "error"
 	Detail     string   // the Hub's explanation, one line
 	Updated    []string // keys the Hub saved before it stopped
@@ -248,7 +248,7 @@ const (
 	setEnvErrCodeLimit   = 64
 	setEnvErrDetailLimit = 500
 	setEnvErrKeysLimit   = 20
-	setEnvMinValueLen    = 4 // shorter values are too common in prose to match on
+	setEnvMinValueLen    = 4 // shorter values are NOT filtered: too common in prose to match on
 )
 
 var envKeyRe = regexp.MustCompile(`^[A-Z][A-Z0-9_]{2,62}$`)
@@ -268,7 +268,12 @@ func oneLine(s string, max int) string {
 // not the Hub's JSON shape leaves only the status. A text field that contains
 // one of the submitted values is dropped: values are never shown.
 func newSetEnvValuesError(resp *http.Response, values map[string]string) *SetEnvValuesError {
-	e := &SetEnvValuesError{StatusCode: resp.StatusCode, Status: resp.Status}
+	// The reason phrase in resp.Status is the server's (or a proxy's) own text,
+	// so the status line is rebuilt from the code alone.
+	e := &SetEnvValuesError{
+		StatusCode: resp.StatusCode,
+		Status:     strings.TrimSpace(fmt.Sprintf("%d %s", resp.StatusCode, http.StatusText(resp.StatusCode))),
+	}
 	var body struct {
 		Error   string   `json:"error"`
 		Code    string   `json:"code"`
@@ -279,9 +284,32 @@ func newSetEnvValuesError(resp *http.Response, values map[string]string) *SetEnv
 	if err != nil || json.Unmarshal(raw, &body) != nil {
 		return e
 	}
+	// A field is checked twice: as received (so a multi-line value echoed
+	// verbatim is caught), and as it would print (so a value split by a
+	// character the sanitizer removes, such as a zero-width space, is caught).
+	// Values shorter than setEnvMinValueLen are not filtered: they match
+	// ordinary words too often, and would hide most details.
+	printed := func(s string) string { return oneLine(s, len(s)) }
 	hasValue := func(s string) bool {
+		p := printed(s)
 		for _, v := range values {
-			if len(v) >= setEnvMinValueLen && strings.Contains(s, v) {
+			if len(v) < setEnvMinValueLen {
+				continue
+			}
+			if strings.Contains(s, v) {
+				return true
+			}
+			if pv := printed(v); len(pv) >= setEnvMinValueLen && strings.Contains(p, pv) {
+				return true
+			}
+		}
+		return false
+	}
+	// A saved key is listed only if it is not itself a submitted value (a
+	// value can be key-shaped). Exact match, whatever its length.
+	isValue := func(k string) bool {
+		for _, v := range values {
+			if k == v {
 				return true
 			}
 		}
@@ -298,7 +326,7 @@ func newSetEnvValuesError(resp *http.Response, values map[string]string) *SetEnv
 		e.Detail = oneLine(body.Detail, setEnvErrDetailLimit)
 	}
 	for _, k := range body.Updated {
-		if len(e.Updated) < setEnvErrKeysLimit && envKeyRe.MatchString(k) {
+		if len(e.Updated) < setEnvErrKeysLimit && envKeyRe.MatchString(k) && !isValue(k) {
 			e.Updated = append(e.Updated, k)
 		}
 	}

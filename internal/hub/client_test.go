@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -465,6 +466,87 @@ func TestSetEnvValues_ErrorNeverEchoesASubmittedValue(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "409") || !strings.Contains(err.Error(), "some_code") {
 		t.Errorf("status and code should still show: %v", err)
+	}
+}
+
+func TestSetEnvValues_ErrorNeverEchoesAValueHiddenByARemovedCharacter(t *testing.T) {
+	// The zero-width space is dropped when the text is made terminal-safe, so
+	// the PRINTED text would hold the value although the raw text does not.
+	c := setEnvErrServer(t, http.StatusConflict, `{"error":"conflict","code":"some_code","detail":"could not store sk-live-12\u200b3456"}`)
+	_, err := c.SetEnvValues(context.Background(), "o", "r", "uat", map[string]string{"API_KEY": "sk-live-123456"})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if strings.Contains(err.Error(), "sk-live-123456") {
+		t.Errorf("error must not contain a submitted value: %q", err.Error())
+	}
+}
+
+func TestSetEnvValues_ErrorNeverEchoesAValueInTheCode(t *testing.T) {
+	c := setEnvErrServer(t, http.StatusConflict, `{"error":"conflict","code":"bad_sk-live-123456","detail":"refused"}`)
+	_, err := c.SetEnvValues(context.Background(), "o", "r", "uat", map[string]string{"API_KEY": "sk-live-123456"})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if strings.Contains(err.Error(), "sk-live-123456") {
+		t.Errorf("error must not contain a submitted value: %q", err.Error())
+	}
+	if !strings.Contains(err.Error(), "409") || !strings.Contains(err.Error(), "refused") {
+		t.Errorf("status and detail should still show: %q", err.Error())
+	}
+}
+
+func TestSetEnvValues_ErrorNeverListsAKeyShapedValueAsSaved(t *testing.T) {
+	c := setEnvErrServer(t, http.StatusConflict, `{"error":"conflict","code":"some_code","updated":["API_KEY","MYSECRETTOKEN_2024"]}`)
+	_, err := c.SetEnvValues(context.Background(), "o", "r", "uat",
+		map[string]string{"API_KEY": "sk-1", "OTHER_KEY": "MYSECRETTOKEN_2024"})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if strings.Contains(err.Error(), "MYSECRETTOKEN_2024") {
+		t.Errorf("a submitted value must not be listed as a saved key: %q", err.Error())
+	}
+	if !strings.Contains(err.Error(), "API_KEY") {
+		t.Errorf("the real saved key should still be listed: %q", err.Error())
+	}
+}
+
+func TestSetEnvValues_OversizedErrorBody_ShowsTheStatusOnly(t *testing.T) {
+	big := `{"error":"conflict","code":"some_code","detail":"` + strings.Repeat("x", 80<<10) + `"}`
+	c := setEnvErrServer(t, http.StatusConflict, big)
+	_, err := c.SetEnvValues(context.Background(), "o", "r", "uat", map[string]string{"K": "V"})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if got, want := err.Error(), "set-env-values failed: 409 Conflict"; got != want {
+		t.Errorf("error = %q, want %q", got, want)
+	}
+}
+
+func TestSetEnvValues_StatusTextIsNotTakenFromTheServer(t *testing.T) {
+	// The reason phrase on the status line is the server's (or a proxy's) text.
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		buf := make([]byte, 4096)
+		_, _ = conn.Read(buf)
+		_, _ = conn.Write([]byte("HTTP/1.1 409 Con\x1b[31mflict sk-live-123456\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}"))
+	}()
+	c := &hub.Client{BaseURL: "http://" + ln.Addr().String(), Credential: "tok"}
+	_, err = c.SetEnvValues(context.Background(), "o", "r", "uat", map[string]string{"API_KEY": "sk-live-123456"})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if got, want := err.Error(), "set-env-values failed: 409 Conflict"; got != want {
+		t.Errorf("error = %q, want %q", got, want)
 	}
 }
 
