@@ -61,7 +61,8 @@ func MaybeNotify(version string, interactive bool, out io.Writer) {
 		}
 	}
 
-	if latest != "" && IsNewer(version, latest) {
+	// The cache is a file on disk: a tag in it that is not vX.Y.Z is never printed.
+	if latest != "" && releaseTagRe.MatchString(latest) && IsNewer(version, latest) {
 		fmt.Fprint(out, Notice(version, latest))
 	}
 }
