@@ -291,8 +291,35 @@ jobs:
           fi
           echo "draft has exactly the $(wc -l <<<"$want") files in dist/"
 
+      # Only a plain vX.Y.Z may become the Latest release: `keyto update` and
+      # the installers read releases/latest, and `keyto update` refuses any
+      # tag that is not vX.Y.Z (internal/selfupdate releaseTagRe). Any other
+      # v* tag (v1.0.0-rc.1, v1.2, ...) is published as a pre-release, which
+      # never becomes Latest.
+      - name: Classify the tag (only vX.Y.Z is Latest)
+        id: channel
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          export LC_ALL=C   # [0-9] is ASCII digits only
+          if [[ "$TAG" =~ ^v[0-9]{1,6}\.[0-9]{1,6}\.[0-9]{1,6}$ ]]; then
+            echo "latest=true" >> "$GITHUB_OUTPUT"
+            echo "$TAG is vX.Y.Z: published as the Latest release"
+          else
+            echo "latest=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::$TAG is not vX.Y.Z: published as a pre-release, never Latest"
+          fi
+
       - name: Publish GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
-        run: gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false --latest
+          LATEST: ${{ steps.channel.outputs.latest }}
+        run: |
+          set -euo pipefail
+          if [ "$LATEST" = "true" ]; then
+            gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false --latest
+          else
+            gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false --prerelease --latest=false
+          fi
