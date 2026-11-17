@@ -8,13 +8,16 @@ import (
 	"fmt"
 	"io"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
 
 	"github.com/hemfrid/keyto-hub-cli/internal/config"
+	"github.com/hemfrid/keyto-hub-cli/internal/ghname"
 	"github.com/hemfrid/keyto-hub-cli/internal/hub"
 	"github.com/hemfrid/keyto-hub-cli/internal/project"
+	"github.com/hemfrid/keyto-hub-cli/internal/termsafe"
 )
 
 // Deps holds all injectable dependencies for Run.  Each field is a function or
@@ -100,30 +103,45 @@ func Run(ctx context.Context, projectArg string, d Deps) (string, error) {
 
 // runWithArg handles the case where the user specified a project name explicitly.
 func (s *session) runWithArg(ctx context.Context, name string) (string, error) {
-	// Check if cwd is already that project.
 	m, err := s.ReadMarker(s.Cwd)
 	if err != nil {
 		return "", fmt.Errorf("read project marker: %w", err)
 	}
-	if m != nil && m.Name == name {
-		// Re-wire in place.
-		if err := s.Wire(s.Cwd, m, s.Creds.UserEmail, s.Creds.UserName); err != nil {
-			return "", err
-		}
-		fmt.Fprintln(s.Out, "ready")
-		return s.Cwd, nil
-	}
 
-	// Fetch project list and find the named project.
 	projects, err := s.List(ctx)
 	if err != nil {
+		if m != nil {
+			return "", listErrorInPlace(err)
+		}
 		return "", err
 	}
+
+	// Is cwd already a checkout of that project? The marker says which repo
+	// this folder is; the Hub says what that repo's project is called.
+	if m != nil {
+		here, found := projectForMarker(projects, m)
+		switch {
+		case found && here.Name == name:
+			return s.rewire(m, here)
+		case found && m.Name == name:
+			// The marker carries the asked-for name, but its repo is another
+			// project's (a rename in the Hub, or a marker that was edited).
+			return "", fmt.Errorf("this folder is a checkout of %s/%s, which the Hub calls %q, not %q; nothing was changed. Run `keyto checkout %s` to work here",
+				safe(here.Org), safe(here.Repo), safe(here.Name), safe(name), safe(here.Name))
+		case !found && m.Name == name:
+			return "", errMarkerNotAProject(m)
+		}
+		// The marker is for some other project: look the asked-for one up.
+	}
+
 	proj, found := findProject(projects, name)
 	if !found {
 		return "", fmt.Errorf("project %q not found or you are not a member", name)
 	}
 
+	if err := checkRepoNames(proj); err != nil {
+		return "", err
+	}
 	if dir, adopted, err := s.maybeAdopt(proj); err != nil || adopted {
 		return dir, err
 	}
@@ -146,24 +164,115 @@ func (s *session) runInteractive(ctx context.Context) (string, error) {
 	}
 
 	if m != nil {
-		// Prompt the user whether to work in the current project.
-		fmt.Fprintf(s.Out, "Work in %s? [Y/n] ", m.Name)
+		// Which of the user's projects is this folder? Asked before the
+		// prompt, so the prompt names the project as the Hub does.
+		projects, err := s.List(ctx)
+		if err != nil {
+			return "", listErrorInPlace(err)
+		}
+		here, found := projectForMarker(projects, m)
+		if !found {
+			return "", errMarkerNotAProject(m)
+		}
+		fmt.Fprintf(s.Out, "Work in %s? [Y/n] ", safe(here.Name))
 		answer, err := s.readLine()
 		if err != nil && err != io.EOF {
 			return "", fmt.Errorf("read input: %w", err)
 		}
 		answer = strings.TrimSpace(strings.ToLower(answer))
 		if answer == "" || answer == "y" || answer == "yes" {
-			if err := s.Wire(s.Cwd, m, s.Creds.UserEmail, s.Creds.UserName); err != nil {
-				return "", err
-			}
-			fmt.Fprintln(s.Out, "ready")
-			return s.Cwd, nil
+			return s.rewire(m, here)
 		}
 		// Fall through to picker.
 	}
 
 	return s.runPicker(ctx)
+}
+
+// projectForMarker finds the user's Hub project that a marker's org/repo
+// names. The marker (.keyto/project.json) is a file committed in the repo, so
+// it is only trusted to say WHICH of the user's own projects this folder is:
+// its org/repo must be one the Hub lists for the user (GitHub names compare
+// without case). A marker that names any other repo matches nothing.
+func projectForMarker(projects []hub.Project, m *project.Marker) (hub.Project, bool) {
+	for _, p := range projects {
+		if asciiEqualFold(p.Org, m.Org) && asciiEqualFold(p.Repo, m.Repo) {
+			return p, true
+		}
+	}
+	return hub.Project{}, false
+}
+
+// listErrorInPlace is the error when the project list can't be read in a
+// folder that already has a marker. A 401 goes back as it is, so `keyto
+// checkout` signs in again. Anything else (the Hub down, a 5xx, no network)
+// keeps its cause and says that re-wiring in place needs the Hub.
+func listErrorInPlace(err error) error {
+	if hub.IsUnauthorized(err) {
+		return err
+	}
+	return fmt.Errorf("could not read your Hub projects, so nothing was changed; re-wiring in place needs the Hub reachable, retry when it is: %w", err)
+}
+
+// asciiEqualFold compares two GitHub names, ignoring the case of ASCII letters
+// only. GitHub names are ASCII; strings.EqualFold would also fold Unicode, and
+// match the Kelvin sign (U+212A) to "k".
+func asciiEqualFold(a, b string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := 0; i < len(a); i++ {
+		ca, cb := a[i], b[i]
+		if 'A' <= ca && ca <= 'Z' {
+			ca += 'a' - 'A'
+		}
+		if 'A' <= cb && cb <= 'Z' {
+			cb += 'a' - 'A'
+		}
+		if ca != cb {
+			return false
+		}
+	}
+	return true
+}
+
+// errMarkerNotAProject says a marker names a repo that is not one of the
+// user's Hub projects, and what to do about it.
+func errMarkerNotAProject(m *project.Marker) error {
+	return fmt.Errorf("this folder's project marker names %s/%s, which is not one of your Hub projects, so the git remote was left unchanged. "+
+		"If you were added to the project just now, run the command again. Otherwise check .keyto/project.json against the project in the Hub, "+
+		"or run `keyto checkout` in an empty folder and pick the project from the list",
+		safe(m.Org), safe(m.Repo))
+}
+
+// rewire wires cwd as a checkout of proj, the Hub project the marker's repo
+// belongs to. The name, org and repo used are the Hub's, never the marker's
+// spelling, so the remote, the marker and what the user was shown agree. When
+// the marker differed (a rename in the Hub, or another letter case) it is
+// rewritten after the wiring succeeded, and a changed name is pointed out.
+func (s *session) rewire(old *project.Marker, proj hub.Project) (string, error) {
+	if err := checkRepoNames(proj); err != nil {
+		return "", err
+	}
+	// The marker's hub URL is left as it is: the remote is built from the
+	// signed-in Hub, not from the marker.
+	m := &project.Marker{Name: proj.Name, Org: proj.Org, Repo: proj.Repo, HubURL: old.HubURL}
+	// Wire first. The marker file is committed in the repo, so it is only
+	// rewritten once the wiring went through: a wiring that is refused (a
+	// marker naming another Hub) or fails must not leave a changed file behind.
+	if err := s.Wire(s.Cwd, m, s.Creds.UserEmail, s.Creds.UserName); err != nil {
+		return "", err
+	}
+	if *m != *old {
+		if err := s.WriteMarker(s.Cwd, m); err != nil {
+			return "", fmt.Errorf("write project marker: %w", err)
+		}
+		if old.Name != m.Name {
+			fmt.Fprintf(s.Out, "note: the Hub calls this project %s (the marker said %s); .keyto/project.json was updated\n", safe(m.Name), safe(old.Name))
+		}
+	}
+	fmt.Fprintln(s.Out, "ready")
+	return s.Cwd, nil
 }
 
 // runPicker shows a numbered list of projects and lets the user pick one.
@@ -179,7 +288,7 @@ func (s *session) runPicker(ctx context.Context) (string, error) {
 
 	fmt.Fprintln(s.Out, "Your projects:")
 	for i, p := range projects {
-		fmt.Fprintf(s.Out, "  %d. %s (%s)\n", i+1, p.Name, p.Role)
+		fmt.Fprintf(s.Out, "  %d. %s (%s)\n", i+1, safe(p.Name), safe(p.Role))
 	}
 	fmt.Fprintf(s.Out, "Select a project [1-%d]: ", len(projects))
 
@@ -195,6 +304,9 @@ func (s *session) runPicker(ctx context.Context) (string, error) {
 	}
 	proj := projects[idx-1]
 
+	if err := checkRepoNames(proj); err != nil {
+		return "", err
+	}
 	if dir, adopted, err := s.maybeAdopt(proj); err != nil || adopted {
 		return dir, err
 	}
@@ -226,7 +338,7 @@ func (s *session) maybeAdopt(proj hub.Project) (dir string, adopted bool, err er
 		return "", false, nil
 	}
 
-	fmt.Fprintf(s.Out, "This folder is already a checkout of %s/%s. Use it? [Y/n] ", proj.Org, proj.Repo)
+	fmt.Fprintf(s.Out, "This folder is already a checkout of %s/%s. Use it? [Y/n] ", safe(proj.Org), safe(proj.Repo))
 	answer, rerr := s.readLine()
 	if rerr != nil && rerr != io.EOF {
 		return "", false, fmt.Errorf("read input: %w", rerr)
@@ -248,7 +360,7 @@ func (s *session) maybeAdopt(proj hub.Project) (dir string, adopted bool, err er
 	if err := s.Wire(s.Cwd, m, s.Creds.UserEmail, s.Creds.UserName); err != nil {
 		return "", false, err
 	}
-	fmt.Fprintf(s.Out, "Adopted existing checkout of %s in %s\n", proj.Name, s.Cwd)
+	fmt.Fprintf(s.Out, "Adopted existing checkout of %s in %s\n", safe(proj.Name), safe(s.Cwd))
 	return s.Cwd, true, nil
 }
 
@@ -291,7 +403,7 @@ func (s *session) cloneAndWire(proj hub.Project, dir string) (string, error) {
 	repoURL := remoteURL(proj, s.Creds.HubURL)
 
 	if err := s.Clone(repoURL, dir); err != nil {
-		return "", fmt.Errorf("clone %s: %w", repoURL, err)
+		return "", fmt.Errorf("clone %s: %w", safe(repoURL), err)
 	}
 
 	m := &project.Marker{
@@ -307,8 +419,18 @@ func (s *session) cloneAndWire(proj hub.Project, dir string) (string, error) {
 	if err := s.Wire(dir, m, s.Creds.UserEmail, s.Creds.UserName); err != nil {
 		return "", err
 	}
-	fmt.Fprintf(s.Out, "Cloned %s into %s\n", proj.Name, dir)
+	fmt.Fprintf(s.Out, "Cloned %s into %s\n", safe(proj.Name), safe(dir))
 	return dir, nil
+}
+
+// checkRepoNames refuses a project whose org or repo, as the Hub lists them,
+// is not a GitHub owner or repository name. Both go into the git remote URL
+// (remoteURL) and into the adopt prompt, so this runs before either.
+func checkRepoNames(p hub.Project) error {
+	if !ghname.ValidOwner(p.Org) || !ghname.ValidRepo(p.Repo) {
+		return fmt.Errorf("the Hub's org or repo for project %q is not a GitHub name; nothing was cloned or changed", safe(p.Name))
+	}
+	return nil
 }
 
 // remoteURL builds the Hub git proxy URL for a project.
@@ -326,11 +448,65 @@ func findProject(projects []hub.Project, name string) (hub.Project, bool) {
 	return hub.Project{}, false
 }
 
+// folderNameRe is what a project name must look like before it is used as a
+// folder: letters, digits, dot, underscore and hyphen, starting with a letter
+// or digit, at most 100 long. It is wider than the platform's current name
+// rule (lowercase, 3 to 30) on purpose: projects created under older rules
+// must still check out. What matters here is that it is a single path
+// element on every OS.
+var folderNameRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$`)
+
+// windowsDeviceRe matches names Windows reserves, with or without an
+// extension ("con", "NUL.txt", "com1").
+var windowsDeviceRe = regexp.MustCompile(`(?i)^(con|prn|aux|nul|com[0-9]|lpt[0-9])(\..*)?$`)
+
+// plainFolderName reports whether name is safe to join onto a directory: one
+// path element, no separators of any OS, no "." or "..", no drive prefix, no
+// control characters, not a Windows device name, no trailing dot.
+func plainFolderName(name string) bool {
+	return folderNameRe.MatchString(name) &&
+		!strings.HasSuffix(name, ".") &&
+		!windowsDeviceRe.MatchString(name) &&
+		filepath.Base(name) == name
+}
+
+// underDir reports whether path is strictly inside base: not base itself, not
+// above it, not beside it, not on another root.
+func underDir(base, path string) bool {
+	rel, err := filepath.Rel(base, path)
+	if err != nil || rel == "." || filepath.IsAbs(rel) {
+		return false
+	}
+	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
+// folderNameOK is the name rule defaultCheckoutDir applies. It is a variable so
+// a test can switch it off and show the join check holds on its own.
+var folderNameOK = plainFolderName
+
+// defaultCheckoutDir is the folder a project is cloned into by default,
+// <cwd>/<name>. The name is the Hub's text, so it is checked twice: it has to
+// be a plain folder name, and the joined path has to land inside cwd.
+func defaultCheckoutDir(cwd, name string) (string, error) {
+	refused := fmt.Errorf("the Hub's name for this project (%q) can't be used as a folder name; nothing was cloned", safe(name))
+	if !folderNameOK(name) {
+		return "", refused
+	}
+	dir := filepath.Join(cwd, name)
+	if !underDir(cwd, dir) {
+		return "", refused
+	}
+	return dir, nil
+}
+
 // promptDir prints a prompt and reads the checkout directory.
 // If the user presses Enter without typing, the default (<cwd>/<name>) is used.
 func (s *session) promptDir(name string) (string, error) {
-	defaultDir := filepath.Join(s.Cwd, name)
-	fmt.Fprintf(s.Out, "Checkout directory [%s]: ", defaultDir)
+	defaultDir, err := defaultCheckoutDir(s.Cwd, name)
+	if err != nil {
+		return "", err
+	}
+	fmt.Fprintf(s.Out, "Checkout directory [%s]: ", safe(defaultDir))
 	line, err := s.readLine()
 	if err != nil && err != io.EOF {
 		return "", fmt.Errorf("read input: %w", err)
@@ -355,3 +531,9 @@ func (s *session) readLine() (string, error) {
 	}
 	return line, err
 }
+
+// safe strips terminal control sequences from text that is about to be
+// printed. Project names, orgs, repos and roles are the Hub's text, the marker
+// name comes from a file committed in the repo, and the directories shown are
+// built from those names.
+func safe(s string) string { return termsafe.Sanitize(s, false) }

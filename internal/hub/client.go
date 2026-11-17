@@ -9,7 +9,11 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"regexp"
+	"strings"
 	"time"
+
+	"github.com/hemfrid/keyto-hub-cli/internal/termsafe"
 )
 
 // Project represents a Keyto project that the authenticated user is a member of.
@@ -83,7 +87,7 @@ func (c *Client) ExchangeToken(ctx context.Context, code, codeVerifier, redirect
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("token exchange failed: %s", resp.Status)
+		return nil, &StatusError{Op: "token exchange", StatusCode: resp.StatusCode}
 	}
 
 	var tr TokenResponse
@@ -119,7 +123,7 @@ func (c *Client) ListProjects(ctx context.Context) ([]Project, error) {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("list-projects failed: %s", resp.Status)
+		return nil, &StatusError{Op: "list-projects", StatusCode: resp.StatusCode}
 	}
 
 	var lr listProjectsResponse
@@ -165,7 +169,7 @@ func (c *Client) FetchEnvValues(
 		return nil, nil, fmt.Errorf("fetch-env-values: marshal request: %w", err)
 	}
 
-	endpoint := fmt.Sprintf("%s/api/cli/projects/%s/%s/env/%s/values", c.BaseURL, org, repo, env)
+	endpoint := c.BaseURL + envValuesPath(org, repo, env)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
 	if err != nil {
 		return nil, nil, fmt.Errorf("fetch-env-values: build request: %w", err)
@@ -182,7 +186,7 @@ func (c *Client) FetchEnvValues(
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, nil, fmt.Errorf("fetch-env-values failed: %s", resp.Status)
+		return nil, nil, &StatusError{Op: "fetch-env-values", StatusCode: resp.StatusCode}
 	}
 
 	var fr fetchEnvValuesResponse
@@ -214,10 +218,125 @@ type setEnvValuesResponse struct {
 	Updated []string `json:"updated"`
 }
 
+// SetEnvValuesError is a refused env write. The Hub's error body for this
+// endpoint is JSON: { error, code?, detail?, updated? }. It names keys, never
+// values. Only those decoded fields are kept, never the raw body.
+type SetEnvValuesError struct {
+	StatusCode int
+	Status     string   // e.g. "409 Conflict": the code and Go's own text for it, never the server's
+	Code       string   // machine code, e.g. "secret_recently_deleted"; else the body's "error"
+	Detail     string   // the Hub's explanation, one line
+	Updated    []string // keys the Hub saved before it stopped
+}
+
+func (e *SetEnvValuesError) Error() string {
+	msg := "set-env-values failed: " + e.Status
+	if e.Code != "" {
+		msg += " (" + e.Code + ")"
+	}
+	if e.Detail != "" {
+		msg += ": " + e.Detail
+	}
+	if len(e.Updated) > 0 {
+		msg += " [already saved: " + strings.Join(e.Updated, ", ") + "]"
+	}
+	return msg
+}
+
+const (
+	setEnvErrBodyLimit   = 64 << 10 // bytes of an error body read
+	setEnvErrCodeLimit   = 64
+	setEnvErrDetailLimit = 500
+	setEnvErrKeysLimit   = 20
+	setEnvMinValueLen    = 4 // shorter values are NOT filtered: too common in prose to match on
+)
+
+var envKeyRe = regexp.MustCompile(`^[A-Z][A-Z0-9_]{2,62}$`)
+
+// oneLine makes Hub-supplied text safe to print (termsafe.Sanitize: no escape
+// sequences, no newlines, no bidi overrides), collapses runs of spaces, and
+// cuts it at max runes.
+func oneLine(s string, max int) string {
+	s = strings.Join(strings.Fields(termsafe.Sanitize(s, false)), " ")
+	if r := []rune(s); len(r) > max {
+		s = string(r[:max]) + "..."
+	}
+	return s
+}
+
+// newSetEnvValuesError builds the error for a non-2xx answer. A body that is
+// not the Hub's JSON shape leaves only the status. A text field that contains
+// one of the submitted values is dropped: values are never shown.
+func newSetEnvValuesError(resp *http.Response, values map[string]string) *SetEnvValuesError {
+	// The reason phrase in resp.Status is the server's (or a proxy's) own text,
+	// so the status line is rebuilt from the code alone.
+	e := &SetEnvValuesError{
+		StatusCode: resp.StatusCode,
+		Status:     termsafe.StatusLine(resp.StatusCode),
+	}
+	var body struct {
+		Error   string   `json:"error"`
+		Code    string   `json:"code"`
+		Detail  string   `json:"detail"`
+		Updated []string `json:"updated"`
+	}
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, setEnvErrBodyLimit))
+	if err != nil || json.Unmarshal(raw, &body) != nil {
+		return e
+	}
+	// A field is checked twice: as received (so a multi-line value echoed
+	// verbatim is caught), and as it would print (so a value split by a
+	// character the sanitizer removes, such as a zero-width space, is caught).
+	// Values shorter than setEnvMinValueLen are not filtered: they match
+	// ordinary words too often, and would hide most details.
+	printed := func(s string) string { return oneLine(s, len(s)) }
+	hasValue := func(s string) bool {
+		p := printed(s)
+		for _, v := range values {
+			if len(v) < setEnvMinValueLen {
+				continue
+			}
+			if strings.Contains(s, v) {
+				return true
+			}
+			if pv := printed(v); len(pv) >= setEnvMinValueLen && strings.Contains(p, pv) {
+				return true
+			}
+		}
+		return false
+	}
+	// A saved key is listed only if it is not itself a submitted value (a
+	// value can be key-shaped). Exact match, whatever its length.
+	isValue := func(k string) bool {
+		for _, v := range values {
+			if k == v {
+				return true
+			}
+		}
+		return false
+	}
+	code := body.Code
+	if code == "" {
+		code = body.Error
+	}
+	if !hasValue(code) {
+		e.Code = oneLine(code, setEnvErrCodeLimit)
+	}
+	if !hasValue(body.Detail) {
+		e.Detail = oneLine(body.Detail, setEnvErrDetailLimit)
+	}
+	for _, k := range body.Updated {
+		if len(e.Updated) < setEnvErrKeysLimit && envKeyRe.MatchString(k) && !isValue(k) {
+			e.Updated = append(e.Updated, k)
+		}
+	}
+	return e
+}
+
 // SetEnvValues upserts env vars in the given environment via the Hub and returns
-// the keys the Hub reports as updated. Non-2xx returns an error with the HTTP
-// status but never the raw body (to avoid leaking error details). Values are
-// never logged.
+// the keys the Hub reports as updated. Non-2xx returns a *SetEnvValuesError with
+// the HTTP status and the Hub's code, detail and already-saved keys, but never
+// the raw body. Values are never logged.
 func (c *Client) SetEnvValues(
 	ctx context.Context,
 	org, repo, env string,
@@ -228,7 +347,7 @@ func (c *Client) SetEnvValues(
 		return nil, fmt.Errorf("set-env-values: marshal request: %w", err)
 	}
 
-	endpoint := fmt.Sprintf("%s/api/cli/projects/%s/%s/env/%s/values", c.BaseURL, org, repo, env)
+	endpoint := c.BaseURL + envValuesPath(org, repo, env)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPut, endpoint, bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("set-env-values: build request: %w", err)
@@ -245,7 +364,7 @@ func (c *Client) SetEnvValues(
 	defer resp.Body.Close()
 
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		return nil, fmt.Errorf("set-env-values failed: %s", resp.Status)
+		return nil, newSetEnvValuesError(resp, values)
 	}
 
 	var sr setEnvValuesResponse
@@ -295,7 +414,7 @@ func (c *Client) PostDiagnostics(ctx context.Context, payload any) error {
 	defer resp.Body.Close()
 
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		return fmt.Errorf("diagnostics post failed: %s", resp.Status)
+		return &StatusError{Op: "diagnostics post", StatusCode: resp.StatusCode}
 	}
 	return nil
 }
@@ -338,10 +457,10 @@ func (c *Client) AIBundleMeta(ctx context.Context) (*AIBundleMeta, error) {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode == http.StatusUnauthorized {
-		return nil, fmt.Errorf("ai-bundle meta: unauthorized — run 'keyto auth'")
+		return nil, &StatusError{Op: "ai-bundle meta", StatusCode: resp.StatusCode, Message: "ai-bundle meta: unauthorized — run 'keyto auth'"}
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("ai-bundle meta failed: %s", resp.Status)
+		return nil, &StatusError{Op: "ai-bundle meta", StatusCode: resp.StatusCode}
 	}
 	var m AIBundleMeta
 	if err := json.NewDecoder(resp.Body).Decode(&m); err != nil {
@@ -366,10 +485,17 @@ func (c *Client) AIBundleTarball(ctx context.Context, tag string) ([]byte, error
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode == http.StatusUnauthorized {
-		return nil, fmt.Errorf("ai-bundle: unauthorized — run 'keyto auth'")
+		return nil, &StatusError{Op: "ai-bundle download", StatusCode: resp.StatusCode, Message: "ai-bundle: unauthorized — run 'keyto auth'"}
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("ai-bundle download failed: %s", resp.Status)
+		return nil, &StatusError{Op: "ai-bundle download", StatusCode: resp.StatusCode}
 	}
 	return io.ReadAll(resp.Body)
+}
+
+// envValuesPath is the env-values route for a project. org, repo and env are
+// each escaped as one path segment, so a slash, "?" or "#" inside one of them
+// cannot change the route.
+func envValuesPath(org, repo, env string) string {
+	return "/api/cli/projects/" + url.PathEscape(org) + "/" + url.PathEscape(repo) + "/env/" + url.PathEscape(env) + "/values"
 }

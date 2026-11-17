@@ -2,6 +2,8 @@
 package termsafe
 
 import (
+	"fmt"
+	"net/http"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -193,4 +195,29 @@ func validSGR(params string) bool {
 		}
 	}
 	return true
+}
+
+// StatusLine is the text to print for an HTTP status: the code and Go's own
+// name for it ("409 Conflict"), or the code alone when Go has no name. The
+// reason phrase in http.Response.Status is the server's (or a proxy's) own
+// text and can carry escape sequences, so it is never printed.
+func StatusLine(code int) string {
+	return strings.TrimSpace(fmt.Sprintf("%d %s", code, http.StatusText(code)))
+}
+
+// Text is multi-line text (an error message, a tool's output) made safe to
+// print: each line is sanitized on its own, so the lines and their
+// indentation stay. Carriage returns are read as a terminal reads them: one at
+// the end of a line ("\r\n") is dropped, and one inside a line (a progress
+// update) starts the line over, so only the text after the last one stays.
+func Text(s string) string {
+	lines := strings.Split(s, "\n")
+	for i, line := range lines {
+		line = strings.TrimRight(line, "\r")
+		if cr := strings.LastIndexByte(line, '\r'); cr >= 0 {
+			line = line[cr+1:]
+		}
+		lines[i] = Sanitize(line, false)
+	}
+	return strings.Join(lines, "\n")
 }

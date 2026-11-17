@@ -8,7 +8,6 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -62,15 +61,12 @@ var checkoutRun = checkout.Run
 // without running a real local boot loop.
 var bootRun = boot.Run
 
-// isAuthError reports whether err looks like a server-side 401/Unauthorized.
-// The Hub client surfaces a non-200 status as `fmt.Errorf("...: %s", resp.Status)`,
-// so the error string contains "401" / "Unauthorized" — we match on that.
+// isAuthError reports whether err is a 401 the Hub answered, which means the
+// stored credential was refused. It reads the typed status code the Hub client
+// returns (hub.IsUnauthorized), never the error text: a project named
+// "app-401", a clone URL or a tool's output can all contain "401".
 func isAuthError(err error) bool {
-	if err == nil {
-		return false
-	}
-	msg := err.Error()
-	return strings.Contains(msg, "401") || strings.Contains(strings.ToLower(msg), "unauthorized")
+	return hub.IsUnauthorized(err)
 }
 
 // reauth re-runs the browser login flow (always minting a fresh credential),
@@ -101,10 +97,17 @@ var reauth = func(ctx context.Context) (*config.Creds, error) {
 }
 
 func main() {
-	if err := dispatch(os.Args[1:]); err != nil {
-		fmt.Fprintln(os.Stderr, "keyto:", err)
-		os.Exit(1)
+	os.Exit(run(os.Args[1:], os.Stderr))
+}
+
+// run executes one keyto command and returns the process exit code. A failure
+// is printed to errOut through printError, never as the raw error.
+func run(args []string, errOut io.Writer) int {
+	if err := dispatch(args); err != nil {
+		printError(errOut, err)
+		return 1
 	}
+	return 0
 }
 
 func dispatch(args []string) error {
@@ -259,7 +262,11 @@ func checkoutDeps(ctx context.Context, creds *config.Creds, cwd string) checkout
 			return cmd.Run()
 		},
 		Wire: func(dir string, m *project.Marker, email, name string) error {
-			return gitwire.Wire(gitwire.RealRunner, dir, m, email, name)
+			hubURL := ""
+			if creds != nil {
+				hubURL = creds.HubURL
+			}
+			return gitwire.Wire(gitwire.RealRunner, dir, m, hubURL, email, name)
 		},
 		ReadMarker:  project.Read,
 		WriteMarker: project.Write,
@@ -418,14 +425,19 @@ func runBootImpl(ctx context.Context, args []string) error {
 	// First run uses creds==nil — the env-sync step loads them from disk as it
 	// did before. If the Hub rejects the credential with a 401 (the only
 	// network-touching step in boot), re-auth in the browser and retry with the
-	// freshly-minted token threaded through, exactly once.
+	// freshly-minted token threaded through, exactly once. A failed npm install
+	// that names a 401 from the Hub's npm registry is only a hint (npm's output
+	// is not the Hub's word), so the Hub is asked first: see judgeBootError.
 	err = bootRun(ctx, bootDeps(ctx, cwd, flags, nil), flags)
-	if isAuthError(err) {
+	switch verdict, probeErr := judgeBootError(ctx, err); verdict {
+	case signInAgain:
 		creds, rerr := reauth(ctx)
 		if rerr != nil {
 			return rerr
 		}
 		err = bootRun(ctx, bootDeps(ctx, cwd, flags, creds), flags)
+	case hubAcceptsCredential, hubDidNotAnswer:
+		err = unconfirmedLaneError(err, verdict, probeErr)
 	}
 	return err
 }
@@ -484,7 +496,7 @@ func bootDeps(ctx context.Context, cwd string, flags boot.Flags, creds *config.C
 		},
 		DBRunning:          func(ctx context.Context) bool { return composeDBRunning(ctx, cwd) },
 		NodeModulesPresent: func() bool { return dirExists(filepath.Join(cwd, "node_modules")) },
-		Install:            func(ctx context.Context) error { return npmInstall(ctx, cwd, npmLaneArgs(laneRegistry)) },
+		Install:            func(ctx context.Context) error { return npmInstall(ctx, cwd, laneRegistry) },
 		RunScript:          func(ctx context.Context, script string) error { return runNpmScript(ctx, cwd, script) },
 		// nil on CI / non-interactive shells (browserOpener returns nil) — boot
 		// then skips the open. --no-open is handled separately via flags.NoOpen.
@@ -581,18 +593,33 @@ func composeDBRunning(ctx context.Context, dir string) bool {
 }
 
 // npmInstall runs `npm ci` when a lockfile is present (reproducible install),
-// else `npm install`, with extraArgs after the subcommand. Output streams to
-// stderr to keep stdout clean.
-func npmInstall(ctx context.Context, dir string, extraArgs []string) error {
+// else `npm install`. Output streams to stderr to keep stdout clean.
+//
+// laneRegistry is the Hub's npm registry when the project installs through it
+// (a Workers repo; "" otherwise). Without it npm is attached straight to the
+// terminal, as always. With it, npm's output also goes through a pipe so its
+// last lines can be read for a 401 from that registry (npmInstallError). npm
+// then sees no terminal: it shows no progress bar, and it is asked for colour
+// explicitly when stderr is a terminal.
+func npmInstall(ctx context.Context, dir, laneRegistry string) error {
 	sub := "install"
 	if fileExists(filepath.Join(dir, "package-lock.json")) {
 		sub = "ci"
 	}
-	cmd := exec.CommandContext(ctx, "npm", append([]string{sub}, extraArgs...)...)
+	colour := ui.IsStderrTTY() && os.Getenv("NO_COLOR") == ""
+	cmd := exec.CommandContext(ctx, "npm", npmInstallArgs(sub, laneRegistry, colour)...)
 	cmd.Dir = dir
-	cmd.Stdout = os.Stderr
-	cmd.Stderr = os.Stderr
-	return cmd.Run()
+	if laneRegistry == "" {
+		cmd.Stdout = os.Stderr
+		cmd.Stderr = os.Stderr
+		return cmd.Run()
+	}
+	tail := &tailBuffer{max: npmOutputTail}
+	out := io.MultiWriter(os.Stderr, tail)
+	cmd.Stdout = out
+	cmd.Stderr = out
+	err := cmd.Run()
+	return npmInstallError(err, tail.String(), laneRegistry)
 }
 
 // runNpmScript runs `npm run <script>` in dir. The "dev" script runs in the
@@ -819,13 +846,15 @@ func runShellInit(args []string) error {
 func cloneArgs(hubURL, exe, repoURL, dir string) []string {
 	args := []string{}
 	if hubURL != "" {
-		key := fmt.Sprintf("credential.%s.helper", hubURL)
+		key := fmt.Sprintf("credential.%s.helper", strings.TrimRight(hubURL, "/"))
 		args = append(args,
 			"-c", key+"=",
 			"-c", key+"="+helperCommand(exe),
 		)
 	}
-	return append(args, "clone", repoURL, dir)
+	// "--" ends the options: a directory the user typed that starts with "-"
+	// is a path, never a git option.
+	return append(args, "clone", "--", repoURL, dir)
 }
 
 // helperCommand returns the git `!` credential helper that runs `keyto
@@ -862,16 +891,14 @@ func runCredential(args []string) error {
 		}
 	}
 
-	// Derive the Hub hostname from the stored HubURL.  If we have no creds the
-	// host is "" which never matches any git request host.
-	hubHost := ""
-	if creds != nil && creds.HubURL != "" {
-		if u, err := url.Parse(creds.HubURL); err == nil {
-			hubHost = u.Host
-		}
+	// The helper answers only the signed-in Hub's origin (protocol and host).
+	// With no creds the URL is "", which matches no request.
+	hubURL := ""
+	if creds != nil {
+		hubURL = creds.HubURL
 	}
 
-	return credential.Helper(op, os.Stdin, os.Stdout, os.Stderr, creds, hubHost)
+	return credential.Helper(op, os.Stdin, os.Stdout, os.Stderr, creds, hubURL)
 }
 
 // runUpdate implements `keyto update`: fetch the latest release, verify it, and
@@ -906,7 +933,7 @@ func runAuth(args []string) error {
 	hub := hubURL()
 
 	if existing, err := config.Load(); err == nil && reuseCredential(existing, hub, force) {
-		fmt.Printf("Already authenticated as %s (%s).\n", existing.UserName, existing.UserEmail)
+		fmt.Println(signedInLine("Already authenticated as", existing.UserName, existing.UserEmail) + ".")
 		if !existing.ExpiresAt.IsZero() {
 			fmt.Printf("Credential valid until %s.\n", existing.ExpiresAt.Local().Format("2006-01-02 15:04 MST"))
 		}
@@ -930,7 +957,7 @@ func runAuth(args []string) error {
 	}); err != nil {
 		return fmt.Errorf("save credentials: %w", err)
 	}
-	fmt.Printf("Authenticated as %s (%s)\n", tr.UserName, tr.UserEmail)
+	fmt.Println(signedInLine("Authenticated as", tr.UserName, tr.UserEmail))
 	return nil
 }
 

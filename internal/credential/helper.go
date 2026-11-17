@@ -20,6 +20,7 @@ import (
 	"strings"
 
 	"github.com/hemfrid/keyto-hub-cli/internal/config"
+	"github.com/hemfrid/keyto-hub-cli/internal/huborigin"
 )
 
 const (
@@ -34,13 +35,17 @@ const (
 //   - out: stdout to git — the credential lines on a successful "get".
 //   - errOut: stderr to the user — friendly re-login hints (never secrets).
 //   - creds: the stored Keyto credentials (may be nil if not authenticated).
-//   - hubHost: the hostname of the Hub (e.g. "hub.keytolabs.com").
+//   - hubURL: the signed-in Hub's URL (e.g. "https://hub.keytolabs.com"). The
+//     helper answers only a request for that origin: the same protocol as its
+//     scheme, the same host and the same port (the scheme's default when none
+//     is written). A request for the Hub's host over http would carry the
+//     token in cleartext, so it is not answered.
 func Helper(
 	op string,
 	in io.Reader,
 	out, errOut io.Writer,
 	creds *config.Creds,
-	hubHost string,
+	hubURL string,
 ) error {
 	// "store" is always a no-op: we manage credentials ourselves.
 	if op == "store" {
@@ -52,10 +57,10 @@ func Helper(
 
 	attrs := parseAttrs(in)
 
-	// Only act for the Hub host. When not signed in, hubHost is "" and never
-	// matches a real request host, so we stay silent and defer to the next
+	// Only act for the Hub's origin. When not signed in (or the stored URL does
+	// not parse), nothing matches, so we stay silent and defer to the next
 	// helper in git's chain.
-	if attrs["host"] != hubHost {
+	if !forHub(attrs, hubURL) {
 		return nil
 	}
 
@@ -99,4 +104,22 @@ func parseAttrs(r io.Reader) map[string]string {
 		attrs[k] = v
 	}
 	return attrs
+}
+
+// forHub reports whether a git credential request is for the Hub at hubURL:
+// the request's protocol and host (with any port) make the same origin as
+// hubURL (huborigin: http(s) only, no user info, default ports filled in).
+func forHub(attrs map[string]string, hubURL string) bool {
+	// The protocol must be exactly http or https before it goes into a URL: a
+	// protocol like "https://<hub>#" would otherwise turn any host into the
+	// Hub's URL with a fragment.
+	protocol := strings.ToLower(attrs["protocol"])
+	if protocol != "https" && protocol != "http" {
+		return false
+	}
+	host := attrs["host"]
+	if host == "" || strings.ContainsAny(host, "/?#@\\ ") {
+		return false
+	}
+	return huborigin.Same(protocol+"://"+host, hubURL)
 }

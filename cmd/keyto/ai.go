@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 
 	"github.com/hemfrid/keyto-hub-cli/internal/ai"
@@ -51,20 +52,24 @@ func runAIInit(ctx context.Context, root string, deps ai.Deps) error {
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(os.Stderr, "Installed AI capabilities bundle %s: %d files written", res.Tag, len(res.Written))
+	writeAIInit(os.Stderr, res)
+	return nil
+}
+
+func writeAIInit(w io.Writer, res *ai.InitResult) {
+	fmt.Fprintf(w, "Installed AI capabilities bundle %s: %d files written", res.Tag, len(res.Written))
 	if len(res.Skipped) > 0 {
-		fmt.Fprintf(os.Stderr, ", %d existing files left untouched:\n", len(res.Skipped))
+		fmt.Fprintf(w, ", %d existing files left untouched:\n", len(res.Skipped))
 		for _, p := range res.Skipped {
-			fmt.Fprintf(os.Stderr, "  kept: %s\n", p)
+			fmt.Fprintf(w, "  kept: %s\n", bundlePath(p))
 		}
 	} else {
-		fmt.Fprintln(os.Stderr)
+		fmt.Fprintln(w)
 	}
-	fmt.Fprintln(os.Stderr, "\nNext:")
-	fmt.Fprintln(os.Stderr, "  1. Review the diff (git status / git diff), then commit it.")
-	fmt.Fprintln(os.Stderr, "  2. Open Claude Code in this repo and run /setup to adapt the")
-	fmt.Fprintln(os.Stderr, "     capabilities to this project (stack, commands, tracker).")
-	return nil
+	fmt.Fprintln(w, "\nNext:")
+	fmt.Fprintln(w, "  1. Review the diff (git status / git diff), then commit it.")
+	fmt.Fprintln(w, "  2. Open Claude Code in this repo and run /setup to adapt the")
+	fmt.Fprintln(w, "     capabilities to this project (stack, commands, tracker).")
 }
 
 func runAIUpdate(ctx context.Context, root string, deps ai.Deps) error {
@@ -72,11 +77,16 @@ func runAIUpdate(ctx context.Context, root string, deps ai.Deps) error {
 	if err != nil {
 		return err
 	}
+	writeAIUpdate(os.Stderr, res)
+	return nil
+}
+
+func writeAIUpdate(w io.Writer, res *ai.UpdateResult) {
 	if res.UpToDate {
-		fmt.Fprintf(os.Stderr, "Up to date (%s).\n", res.Tag)
-		return nil
+		fmt.Fprintf(w, "Up to date (%s).\n", res.Tag)
+		return
 	}
-	fmt.Fprintf(os.Stderr, "Updated AI capabilities bundle %s -> %s\n", res.FromTag, res.Tag)
+	fmt.Fprintf(w, "Updated AI capabilities bundle %s -> %s\n", res.FromTag, res.Tag)
 	report := []struct {
 		label string
 		paths []string
@@ -91,11 +101,10 @@ func runAIUpdate(ctx context.Context, root string, deps ai.Deps) error {
 	}
 	for _, r := range report {
 		for _, p := range r.paths {
-			fmt.Fprintf(os.Stderr, "  %s: %s\n", r.label, p)
+			fmt.Fprintf(w, "  %s: %s\n", r.label, bundlePath(p))
 		}
 	}
-	fmt.Fprintln(os.Stderr, "\nReview the diff, then commit it.")
-	return nil
+	fmt.Fprintln(w, "\nReview the diff, then commit it.")
 }
 
 func runAIStatus(ctx context.Context, root string, deps ai.Deps) error {
@@ -103,16 +112,25 @@ func runAIStatus(ctx context.Context, root string, deps ai.Deps) error {
 	if err != nil {
 		return err
 	}
-	if st.UpToDate {
-		fmt.Fprintf(os.Stderr, "Bundle %s — up to date.\n", st.InstalledTag)
-	} else {
-		fmt.Fprintf(os.Stderr, "Bundle %s — newer release available: %s. Run 'keyto ai update'.\n", st.InstalledTag, st.LatestTag)
-	}
-	for _, p := range st.Modified {
-		fmt.Fprintf(os.Stderr, "  locally modified: %s\n", p)
-	}
-	for _, p := range st.Missing {
-		fmt.Fprintf(os.Stderr, "  locally deleted:  %s\n", p)
-	}
+	writeAIStatus(os.Stderr, st)
 	return nil
 }
+
+func writeAIStatus(w io.Writer, st *ai.Status) {
+	if st.UpToDate {
+		fmt.Fprintf(w, "Bundle %s — up to date.\n", st.InstalledTag)
+	} else {
+		fmt.Fprintf(w, "Bundle %s — newer release available: %s. Run 'keyto ai update'.\n", st.InstalledTag, st.LatestTag)
+	}
+	for _, p := range st.Modified {
+		fmt.Fprintf(w, "  locally modified: %s\n", bundlePath(p))
+	}
+	for _, p := range st.Missing {
+		fmt.Fprintf(w, "  locally deleted:  %s\n", bundlePath(p))
+	}
+}
+
+// bundlePath is a bundle file path safe to print. The paths come from the
+// Hub-relayed manifest and from the pin file; the tarball check refuses one
+// that escapes the repo, not one that carries terminal control characters.
+func bundlePath(p string) string { return sanitizeForTerminal(p, false) }

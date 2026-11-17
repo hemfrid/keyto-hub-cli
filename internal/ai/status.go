@@ -26,13 +26,13 @@ func GetStatus(ctx context.Context, root string, d Deps) (*Status, error) {
 	if pin == nil {
 		return nil, errors.New("no bundle installed here — run 'keyto ai init'")
 	}
-	meta, err := d.Meta(ctx)
+	meta, err := fetchMeta(ctx, d)
 	if err != nil {
 		return nil, err
 	}
 
 	st := &Status{
-		InstalledTag: pin.Tag,
+		InstalledTag: DisplayTag(pin.Tag),
 		LatestTag:    meta.Tag,
 		UpToDate:     pin.Tag == meta.Tag,
 	}

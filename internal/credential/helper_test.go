@@ -13,6 +13,7 @@ import (
 
 const (
 	hubHost  = "hub.keytolabs.com"
+	hubURL   = "https://hub.keytolabs.com"
 	testCred = "tok_abc123"
 )
 
@@ -39,7 +40,7 @@ func TestHelper_Get_MatchingHost_ValidCreds(t *testing.T) {
 	in := gitInput("protocol=https", "host="+hubHost)
 	var out bytes.Buffer
 
-	err := credential.Helper("get", strings.NewReader(in), &out, io.Discard, validCreds(), hubHost)
+	err := credential.Helper("get", strings.NewReader(in), &out, io.Discard, validCreds(), hubURL)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -62,7 +63,7 @@ func TestHelper_Get_DifferentHost(t *testing.T) {
 	in := gitInput("protocol=https", "host=other.example.com")
 	var out bytes.Buffer
 
-	err := credential.Helper("get", strings.NewReader(in), &out, io.Discard, validCreds(), hubHost)
+	err := credential.Helper("get", strings.NewReader(in), &out, io.Discard, validCreds(), hubURL)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -81,7 +82,7 @@ func TestHelper_Get_NilCreds(t *testing.T) {
 	in := gitInput("protocol=https", "host="+hubHost)
 	var out bytes.Buffer
 
-	err := credential.Helper("get", strings.NewReader(in), &out, io.Discard, nil, hubHost)
+	err := credential.Helper("get", strings.NewReader(in), &out, io.Discard, nil, hubURL)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -101,7 +102,7 @@ func TestHelper_Get_ExpiredCreds(t *testing.T) {
 	in := gitInput("protocol=https", "host="+hubHost)
 	var out bytes.Buffer
 
-	err := credential.Helper("get", strings.NewReader(in), &out, io.Discard, expired, hubHost)
+	err := credential.Helper("get", strings.NewReader(in), &out, io.Discard, expired, hubURL)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -120,7 +121,7 @@ func TestHelper_Store(t *testing.T) {
 	in := gitInput("protocol=https", "host="+hubHost, "username=keyto", "password="+testCred)
 	var out bytes.Buffer
 
-	err := credential.Helper("store", strings.NewReader(in), &out, io.Discard, validCreds(), hubHost)
+	err := credential.Helper("store", strings.NewReader(in), &out, io.Discard, validCreds(), hubURL)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -134,7 +135,7 @@ func TestHelper_Erase(t *testing.T) {
 	in := gitInput("protocol=https", "host="+hubHost, "username=keyto", "password="+testCred)
 	var out bytes.Buffer
 
-	err := credential.Helper("erase", strings.NewReader(in), &out, io.Discard, validCreds(), hubHost)
+	err := credential.Helper("erase", strings.NewReader(in), &out, io.Discard, validCreds(), hubURL)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -149,7 +150,7 @@ func TestHelper_Get_ExtraKeys(t *testing.T) {
 	in := "protocol=https\nhost=" + hubHost + "\npath=/some/repo.git\n\n"
 	var out bytes.Buffer
 
-	err := credential.Helper("get", strings.NewReader(in), &out, io.Discard, validCreds(), hubHost)
+	err := credential.Helper("get", strings.NewReader(in), &out, io.Discard, validCreds(), hubURL)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -169,7 +170,7 @@ func TestHelper_Get_NoTrailingBlankLine(t *testing.T) {
 	in := "protocol=https\nhost=" + hubHost
 	var out bytes.Buffer
 
-	err := credential.Helper("get", strings.NewReader(in), &out, io.Discard, validCreds(), hubHost)
+	err := credential.Helper("get", strings.NewReader(in), &out, io.Discard, validCreds(), hubURL)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -190,7 +191,7 @@ func TestHelper_Get_EmptyCredential(t *testing.T) {
 	in := gitInput("protocol=https", "host="+hubHost)
 	var out bytes.Buffer
 
-	err := credential.Helper("get", strings.NewReader(in), &out, io.Discard, empty, hubHost)
+	err := credential.Helper("get", strings.NewReader(in), &out, io.Discard, empty, hubURL)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -209,7 +210,7 @@ func TestHelper_Get_ExpiredCreds_PrintsReloginHint(t *testing.T) {
 	in := gitInput("protocol=https", "host="+hubHost)
 	var out, errOut bytes.Buffer
 
-	if err := credential.Helper("get", strings.NewReader(in), &out, &errOut, expired, hubHost); err != nil {
+	if err := credential.Helper("get", strings.NewReader(in), &out, &errOut, expired, hubURL); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if out.String() != "" {
@@ -229,7 +230,7 @@ func TestHelper_Erase_MatchingHost_PrintsReloginHint(t *testing.T) {
 	in := gitInput("protocol=https", "host="+hubHost)
 	var out, errOut bytes.Buffer
 
-	if err := credential.Helper("erase", strings.NewReader(in), &out, &errOut, validCreds(), hubHost); err != nil {
+	if err := credential.Helper("erase", strings.NewReader(in), &out, &errOut, validCreds(), hubURL); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if out.String() != "" {
@@ -245,10 +246,72 @@ func TestHelper_Erase_DifferentHost_Silent(t *testing.T) {
 	in := gitInput("protocol=https", "host=other.example.com")
 	var out, errOut bytes.Buffer
 
-	if err := credential.Helper("erase", strings.NewReader(in), &out, &errOut, validCreds(), hubHost); err != nil {
+	if err := credential.Helper("erase", strings.NewReader(in), &out, &errOut, validCreds(), hubURL); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if out.String() != "" || errOut.String() != "" {
 		t.Errorf("erase for a non-hub host must be silent; stdout=%q stderr=%q", out.String(), errOut.String())
+	}
+}
+
+// The credential goes only to the signed-in Hub's own origin: the request's
+// protocol must be the Hub URL's scheme, and its host and port the Hub URL's
+// host and port (the scheme's default when none is written). A request for the
+// right host over http would send the token in cleartext, so it gets nothing.
+func TestHelper_AnswersOnlyTheHubsOrigin(t *testing.T) {
+	cases := []struct {
+		name, hub string
+		attrs     []string
+		answers   bool
+	}{
+		{"https, the Hub host", hubURL, []string{"protocol=https", "host=hub.keytolabs.com"}, true},
+		{"the host in another case", hubURL, []string{"protocol=https", "host=HUB.keytolabs.com"}, true},
+		{"http, the Hub host (cleartext)", hubURL, []string{"protocol=http", "host=hub.keytolabs.com"}, false},
+		{"no protocol", hubURL, []string{"host=hub.keytolabs.com"}, false},
+		{"another protocol", hubURL, []string{"protocol=ssh", "host=hub.keytolabs.com"}, false},
+		{"the Hub host with a port the Hub URL lacks", hubURL, []string{"protocol=https", "host=hub.keytolabs.com:8443"}, false},
+		{"a Hub on a port: same port", "https://hub.keytolabs.com:8443", []string{"protocol=https", "host=hub.keytolabs.com:8443"}, true},
+		{"a Hub on a port: no port", "https://hub.keytolabs.com:8443", []string{"protocol=https", "host=hub.keytolabs.com"}, false},
+		{"a Hub on a port: another port", "https://hub.keytolabs.com:8443", []string{"protocol=https", "host=hub.keytolabs.com:9443"}, false},
+		{"an http Hub (local dev): http", "http://127.0.0.1:3000", []string{"protocol=http", "host=127.0.0.1:3000"}, true},
+		{"an http Hub: https is another origin", "http://127.0.0.1:3000", []string{"protocol=https", "host=127.0.0.1:3000"}, false},
+		{"not signed in", "", []string{"protocol=https", "host=hub.keytolabs.com"}, false},
+		{"an unparseable Hub URL", "://bad", []string{"protocol=https", "host=hub.keytolabs.com"}, false},
+		{"http on the https default port", hubURL, []string{"protocol=http", "host=hub.keytolabs.com:443"}, false},
+		{"https with the default port written out", hubURL, []string{"protocol=https", "host=hub.keytolabs.com:443"}, true},
+		{"a stored Hub URL with user info", "https://alice@hub.keytolabs.com", []string{"protocol=https", "host=hub.keytolabs.com"}, false},
+		{"user info in the request host", hubURL, []string{"protocol=https", "host=alice@hub.keytolabs.com"}, false},
+		// S1: a protocol that is not exactly http or https must not be glued into a
+		// URL: "https://hub.keytolabs.com#" + "://evil.example" parses as the Hub.
+		{"a protocol carrying the Hub URL and a fragment", hubURL, []string{"protocol=https://hub.keytolabs.com#", "host=evil.example"}, false},
+		{"a protocol carrying the Hub URL and a query", hubURL, []string{"protocol=https://hub.keytolabs.com?", "host=evil.example"}, false},
+		{"a protocol carrying the Hub URL and a path", hubURL, []string{"protocol=https://hub.keytolabs.com/", "host=evil.example"}, false},
+		{"a protocol with spaces around it", hubURL, []string{"protocol= https ", "host=hub.keytolabs.com"}, false},
+		{"the protocol in capitals", hubURL, []string{"protocol=HTTPS", "host=hub.keytolabs.com"}, true},
+		// S2: a host carrying a path, query, fragment or a space is never the Hub.
+		{"a host with a path", hubURL, []string{"protocol=https", "host=hub.keytolabs.com/x"}, false},
+		{"a host with a query", hubURL, []string{"protocol=https", "host=hub.keytolabs.com?x"}, false},
+		{"a host with a fragment", hubURL, []string{"protocol=https", "host=hub.keytolabs.com#x"}, false},
+		{"a host with a space", hubURL, []string{"protocol=https", "host=hub.keytolabs.com x"}, false},
+		{"a host with a backslash", hubURL, []string{"protocol=https", "host=hub.keytolabs.com\\x"}, false},
+	}
+	for _, tc := range cases {
+		creds := validCreds()
+		creds.HubURL = tc.hub
+		var out, errOut bytes.Buffer
+		if err := credential.Helper("get", strings.NewReader(gitInput(tc.attrs...)), &out, &errOut, creds, tc.hub); err != nil {
+			t.Fatalf("%s: %v", tc.name, err)
+		}
+		if got := strings.Contains(out.String(), testCred); got != tc.answers {
+			t.Errorf("%s: credential sent = %v, want %v (out %q)", tc.name, got, tc.answers, out.String())
+		}
+		// erase follows the same rule: the re-login hint only for the Hub's origin.
+		var eOut, eErr bytes.Buffer
+		if err := credential.Helper("erase", strings.NewReader(gitInput(tc.attrs...)), &eOut, &eErr, creds, tc.hub); err != nil {
+			t.Fatalf("%s erase: %v", tc.name, err)
+		}
+		if got := eErr.Len() > 0; got != tc.answers {
+			t.Errorf("%s: erase hint shown = %v, want %v", tc.name, got, tc.answers)
+		}
 	}
 }

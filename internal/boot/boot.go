@@ -10,6 +10,7 @@ import (
 
 	"github.com/hemfrid/keyto-hub-cli/internal/prereq"
 	"github.com/hemfrid/keyto-hub-cli/internal/stack"
+	"github.com/hemfrid/keyto-hub-cli/internal/termsafe"
 )
 
 type Deps struct {
@@ -118,7 +119,7 @@ func Run(ctx context.Context, d Deps, f Flags) error {
 	if workers && d.NpmLane != nil {
 		fmt.Fprintln(d.Out, "• keyto credential for the Hub package lane (~/.npmrc)…")
 		if err := d.NpmLane(ctx); err != nil {
-			fmt.Fprintf(d.Out, "  tip: %v\n", err)
+			fmt.Fprintf(d.Out, "  tip: %s\n", termsafe.Text(err.Error()))
 		}
 	}
 

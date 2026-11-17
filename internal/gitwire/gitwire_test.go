@@ -2,6 +2,7 @@ package gitwire_test
 
 import (
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/hemfrid/keyto-hub-cli/internal/gitwire"
@@ -37,7 +38,7 @@ func TestWire_MakesExactly5CallsInOrder(t *testing.T) {
 		HubURL: "https://hub.example.com",
 	}
 
-	err := gitwire.Wire(runner, "/repo", m, "alice@example.com", "Alice Example")
+	err := gitwire.Wire(runner, "/repo", m, "https://hub.example.com", "alice@example.com", "Alice Example")
 	if err != nil {
 		t.Fatalf("Wire returned unexpected error: %v", err)
 	}
@@ -85,7 +86,7 @@ func TestWire_StopsOnSecondCallError(t *testing.T) {
 		HubURL: "https://hub.example.com",
 	}
 
-	err := gitwire.Wire(runner, "/repo", m, "alice@example.com", "Alice Example")
+	err := gitwire.Wire(runner, "/repo", m, "https://hub.example.com", "alice@example.com", "Alice Example")
 	if err == nil {
 		t.Fatal("expected error from Wire when runner fails, got nil")
 	}
@@ -110,4 +111,140 @@ func assertCall(t *testing.T, c call, wantDir string, wantArgs []string) {
 			t.Errorf("call args[%d]: got %q, want %q", i, c.args[i], a)
 		}
 	}
+}
+
+// The marker is a file committed in the repo, so its org and repo are not
+// trusted either: a value that is not a GitHub owner or repo name could change
+// where the remote URL points. Nothing is run for such a marker.
+func TestWire_RefusesAMarkerOrgOrRepoThatIsNotAGitHubName(t *testing.T) {
+	cases := []struct{ org, repo string }{
+		{"hemfrid/../../other", "acme-web"},
+		{"hemfrid", "../../other/repo"},
+		{"hemfrid", "acme-web?x=1"},
+		{"evil.example@hemfrid", "acme-web"},
+		{"hemfrid", "acme-web\n[core]\n\tsshCommand = evil"},
+		{"", "acme-web"},
+		{"hemfrid", ""},
+		{"hemfrid", "acme-web.git"},
+	}
+	for _, c := range cases {
+		var calls []call
+		m := &project.Marker{Name: "acme-web", Org: c.org, Repo: c.repo, HubURL: "https://hub.example.com"}
+		err := gitwire.Wire(makeFakeRunner(&calls, -1), "/repo", m, "https://hub.example.com", "alice@example.com", "Alice")
+		if err == nil {
+			t.Errorf("org %q repo %q: want an error", c.org, c.repo)
+		}
+		if len(calls) != 0 {
+			t.Errorf("org %q repo %q: %d git command(s) ran: %v", c.org, c.repo, len(calls), calls)
+		}
+		if err != nil && strings.ContainsAny(err.Error(), "\n\r\x1b") {
+			t.Errorf("org %q repo %q: the error carries a control character: %q", c.org, c.repo, err.Error())
+		}
+	}
+}
+
+// The marker is a file committed in the repo, so its hub_url is not trusted:
+// the remote and the credential helper are wired only for the Hub the user is
+// signed in to, and a marker naming any other origin is refused before git runs.
+func TestWire_RefusesAMarkerThatNamesAnotherHub(t *testing.T) {
+	const signedIn = "https://hub.example.com"
+	for _, markerHub := range []string{
+		"https://evil.example",
+		"https://hub.example.com.evil.example",
+		"https://hub.example.com@evil.example",
+		"https://evil.example/https://hub.example.com",
+		"http://hub.example.com",
+		"https://hub.example.com:8443",
+		"hub.example.com",
+		"",
+		"file:///tmp/repo",
+		"ext::sh -c touch% /tmp/pwned",
+		"https://hub.example.com\nhelper = evil",
+	} {
+		var calls []call
+		m := &project.Marker{Name: "acme-web", Org: "hemfrid", Repo: "acme-web", HubURL: markerHub}
+		err := gitwire.Wire(makeFakeRunner(&calls, -1), "/repo", m, signedIn, "alice@example.com", "Alice")
+		if err == nil {
+			t.Errorf("marker hub_url %q: want an error", markerHub)
+		}
+		if len(calls) != 0 {
+			t.Errorf("marker hub_url %q: git ran %d time(s): %v", markerHub, len(calls), calls)
+		}
+		if err != nil && markerHub != "" && strings.Contains(err.Error(), markerHub) {
+			t.Errorf("marker hub_url %q: the error echoes the marker's text: %v", markerHub, err)
+		}
+	}
+}
+
+func TestWire_RefusesWhenNotSignedIn(t *testing.T) {
+	var calls []call
+	m := &project.Marker{Name: "acme-web", Org: "hemfrid", Repo: "acme-web", HubURL: "https://hub.example.com"}
+	if err := gitwire.Wire(makeFakeRunner(&calls, -1), "/repo", m, "", "a@example.com", "A"); err == nil || len(calls) != 0 {
+		t.Fatalf("err=%v calls=%v, want an error and no git call", err, calls)
+	}
+}
+
+// The same origin written differently (case, trailing slash, explicit default
+// port) is the same Hub, and the remote and helper are built from the signed-in
+// Hub's URL, never the marker's spelling.
+func TestWire_SameOriginWrittenDifferently_WiresTheSignedInHub(t *testing.T) {
+	for _, markerHub := range []string{"https://HUB.Example.com/", "https://hub.example.com:443", "HTTPS://hub.example.com"} {
+		var calls []call
+		m := &project.Marker{Name: "acme-web", Org: "hemfrid", Repo: "acme-web", HubURL: markerHub}
+		if err := gitwire.Wire(makeFakeRunner(&calls, -1), "/repo", m, "https://hub.example.com", "a@example.com", "A"); err != nil {
+			t.Fatalf("marker hub_url %q: %v", markerHub, err)
+		}
+		assertCall(t, calls[0], "/repo", []string{"remote", "set-url", "origin", "https://hub.example.com/git/hemfrid/acme-web.git"})
+		assertCall(t, calls[1], "/repo", []string{"config", "--replace-all", "credential.https://hub.example.com.helper", ""})
+	}
+}
+
+// The mutants that survived 73e20b4c: http on the https default port, and user
+// info on the right host. Both are other origins.
+func TestWire_RefusesHTTPOn443AndUserInfo(t *testing.T) {
+	for _, markerHub := range []string{"http://hub.example.com:443", "https://alice@hub.example.com"} {
+		var calls []call
+		m := &project.Marker{Name: "acme-web", Org: "hemfrid", Repo: "acme-web", HubURL: markerHub}
+		err := gitwire.Wire(makeFakeRunner(&calls, -1), "/repo", m, "https://hub.example.com", "a@example.com", "A")
+		if !errors.Is(err, gitwire.ErrOtherHub) || len(calls) != 0 {
+			t.Errorf("marker hub_url %q: err=%v calls=%d, want ErrOtherHub and no git call", markerHub, err, len(calls))
+		}
+	}
+}
+
+// The refusal says what to do.
+func TestWire_TheMismatchErrorSaysWhatToDo(t *testing.T) {
+	var calls []call
+	m := &project.Marker{Name: "acme-web", Org: "hemfrid", Repo: "acme-web", HubURL: "https://evil.example"}
+	err := gitwire.Wire(makeFakeRunner(&calls, -1), "/repo", m, "https://hub.example.com", "a@example.com", "A")
+	if err == nil || !strings.Contains(err.Error(), "keyto auth") || !strings.Contains(err.Error(), "hub_url") {
+		t.Errorf("want guidance naming hub_url and keyto auth, got: %v", err)
+	}
+}
+
+// A stored Hub URL that is set but unusable is not "not signed in".
+func TestWire_AMalformedStoredHubURLIsNotNotSignedIn(t *testing.T) {
+	for _, stored := range []string{"https://alice@hub.example.com", "ftp://hub.example.com", "hub.example.com"} {
+		var calls []call
+		m := &project.Marker{Name: "acme-web", Org: "hemfrid", Repo: "acme-web", HubURL: stored}
+		err := gitwire.Wire(makeFakeRunner(&calls, -1), "/repo", m, stored, "a@example.com", "A")
+		if err == nil || len(calls) != 0 {
+			t.Fatalf("stored %q: err=%v calls=%d, want an error and no git call", stored, err, len(calls))
+		}
+		if strings.Contains(err.Error(), "not signed in") || !strings.Contains(err.Error(), "keyto auth") {
+			t.Errorf("stored %q: want a 'stored Hub URL' error with keyto auth, got: %v", stored, err)
+		}
+	}
+}
+
+// A stored Hub URL with a trailing slash gives the same remote and the same
+// credential key as one without.
+func TestWire_ATrailingSlashOnTheStoredHubURL(t *testing.T) {
+	var calls []call
+	m := &project.Marker{Name: "acme-web", Org: "hemfrid", Repo: "acme-web", HubURL: "https://hub.example.com"}
+	if err := gitwire.Wire(makeFakeRunner(&calls, -1), "/repo", m, "https://hub.example.com/", "a@example.com", "A"); err != nil {
+		t.Fatal(err)
+	}
+	assertCall(t, calls[0], "/repo", []string{"remote", "set-url", "origin", "https://hub.example.com/git/hemfrid/acme-web.git"})
+	assertCall(t, calls[1], "/repo", []string{"config", "--replace-all", "credential.https://hub.example.com.helper", ""})
 }

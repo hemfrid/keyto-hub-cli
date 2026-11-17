@@ -39,7 +39,11 @@ The everyday loop is **`keyto checkout <project>` → `keyto start`**:
 - **`keyto checkout`** clones the project via the Hub git proxy, wires the git
   remote / credential helper / your commit identity, and (with shell
   integration) drops you into the directory. With no argument it lists your
-  projects; run inside an existing checkout it re-wires it. If you're standing
+  projects; run inside an existing checkout it re-wires it. Re-wiring checks
+  the folder's `.keyto/project.json` against your Hub projects, so it needs the
+  Hub reachable; a marker whose org/repo isn't one of your projects, or whose
+  `hub_url` isn't the Hub you're signed in to, is refused and nothing is
+  changed. If you're standing
   at the root of a plain git clone of the selected project (cloned outside
   keyto — HTTPS or SSH remote), it offers to **adopt it in place** [Y/n]
   instead of cloning a duplicate: it writes the `.keyto` marker and points
@@ -162,6 +166,10 @@ keyto env set API_KEY=sk-123 --app other-app # target a different project
 - **PROD safety:** `--env prod` requires `--allow-prod`, and on a terminal you
   get a y/N confirmation listing the keys (never the values) before anything is
   written.
+- **When the Hub refuses:** you get the Hub's reason and the keys it saved
+  before it stopped, e.g. `409 Conflict (secret_recently_deleted): OTHER_KEY in
+  uat was deleted recently … [already saved: API_KEY]`. A reason that contains
+  one of the values you sent is left out.
 - **Heads-up:** values passed inline land in your shell history — prefer the
   bare-key prompt form for secrets.
 

@@ -3,7 +3,10 @@ package hub_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -388,6 +391,295 @@ func TestSetEnvValues_Non2xx_ReturnsError(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), "secret detail") {
 		t.Errorf("error must not leak response body: %v", err)
+	}
+}
+
+// The Hub's error bodies for this endpoint are JSON: { error, code?, detail?,
+// updated? }. They carry key names, never values. The CLI shows code, detail
+// and the keys already saved, so the user learns why a write was refused.
+
+func setEnvErrServer(t *testing.T, status int, body string) *hub.Client {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(status)
+		_, _ = w.Write([]byte(body))
+	}))
+	t.Cleanup(srv.Close)
+	return &hub.Client{BaseURL: srv.URL, Credential: "tok"}
+}
+
+func TestSetEnvValues_409_ShowsCodeDetailAndSavedKeys(t *testing.T) {
+	c := setEnvErrServer(t, http.StatusConflict, `{"error":"conflict","code":"secret_recently_deleted",`+
+		`"detail":"OTHER_KEY in uat was deleted recently and can't be restored automatically.","updated":["API_KEY"]}`)
+	_, err := c.SetEnvValues(context.Background(), "o", "r", "uat", map[string]string{"API_KEY": "sk-1", "OTHER_KEY": "v2"})
+	if err == nil {
+		t.Fatal("expected error on 409, got nil")
+	}
+	for _, want := range []string{"409", "secret_recently_deleted", "OTHER_KEY in uat was deleted recently", "API_KEY"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error should contain %q, got: %v", want, err)
+		}
+	}
+	var he *hub.SetEnvValuesError
+	if !errors.As(err, &he) {
+		t.Fatalf("error should be a *hub.SetEnvValuesError, got %T", err)
+	}
+	if he.StatusCode != 409 || he.Code != "secret_recently_deleted" || len(he.Updated) != 1 || he.Updated[0] != "API_KEY" {
+		t.Errorf("unexpected fields: %+v", he)
+	}
+}
+
+func TestSetEnvValues_503_ShowsCodeAndDetail(t *testing.T) {
+	c := setEnvErrServer(t, http.StatusServiceUnavailable, `{"error":"service_unavailable","code":"secret_recover_failed",`+
+		`"detail":"OTHER_KEY: Key Vault could not finish restoring the deleted key.","updated":[]}`)
+	_, err := c.SetEnvValues(context.Background(), "o", "r", "prod", map[string]string{"OTHER_KEY": "v2"})
+	if err == nil {
+		t.Fatal("expected error on 503, got nil")
+	}
+	for _, want := range []string{"503", "secret_recover_failed", "could not finish restoring"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error should contain %q, got: %v", want, err)
+		}
+	}
+	if strings.Contains(err.Error(), "already saved") {
+		t.Errorf("no keys were saved, so none should be listed: %v", err)
+	}
+}
+
+func TestSetEnvValues_ErrorWithOnlyTheErrorField_FallsBackToIt(t *testing.T) {
+	c := setEnvErrServer(t, http.StatusForbidden, `{"error":"forbidden"}`)
+	_, err := c.SetEnvValues(context.Background(), "o", "r", "prod", map[string]string{"K": "V"})
+	if err == nil || !strings.Contains(err.Error(), "403") || !strings.Contains(err.Error(), "forbidden") {
+		t.Errorf("error should carry the status and the error field, got: %v", err)
+	}
+}
+
+func TestSetEnvValues_ErrorNeverEchoesASubmittedValue(t *testing.T) {
+	// The Hub never puts a value in an error. If a body ever did, it is dropped.
+	c := setEnvErrServer(t, http.StatusConflict, `{"error":"conflict","code":"some_code","detail":"could not store sk-live-123456"}`)
+	_, err := c.SetEnvValues(context.Background(), "o", "r", "uat", map[string]string{"API_KEY": "sk-live-123456"})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if strings.Contains(err.Error(), "sk-live-123456") {
+		t.Errorf("error must not contain a submitted value: %v", err)
+	}
+	if !strings.Contains(err.Error(), "409") || !strings.Contains(err.Error(), "some_code") {
+		t.Errorf("status and code should still show: %v", err)
+	}
+}
+
+func TestSetEnvValues_ErrorNeverEchoesAValueHiddenByARemovedCharacter(t *testing.T) {
+	// The zero-width space is dropped when the text is made terminal-safe, so
+	// the PRINTED text would hold the value although the raw text does not.
+	c := setEnvErrServer(t, http.StatusConflict, `{"error":"conflict","code":"some_code","detail":"could not store sk-live-12\u200b3456"}`)
+	_, err := c.SetEnvValues(context.Background(), "o", "r", "uat", map[string]string{"API_KEY": "sk-live-123456"})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if strings.Contains(err.Error(), "sk-live-123456") {
+		t.Errorf("error must not contain a submitted value: %q", err.Error())
+	}
+}
+
+func TestSetEnvValues_ErrorNeverEchoesAValueInTheCode(t *testing.T) {
+	c := setEnvErrServer(t, http.StatusConflict, `{"error":"conflict","code":"bad_sk-live-123456","detail":"refused"}`)
+	_, err := c.SetEnvValues(context.Background(), "o", "r", "uat", map[string]string{"API_KEY": "sk-live-123456"})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if strings.Contains(err.Error(), "sk-live-123456") {
+		t.Errorf("error must not contain a submitted value: %q", err.Error())
+	}
+	if !strings.Contains(err.Error(), "409") || !strings.Contains(err.Error(), "refused") {
+		t.Errorf("status and detail should still show: %q", err.Error())
+	}
+}
+
+func TestSetEnvValues_ErrorNeverListsAKeyShapedValueAsSaved(t *testing.T) {
+	c := setEnvErrServer(t, http.StatusConflict, `{"error":"conflict","code":"some_code","updated":["API_KEY","MYSECRETTOKEN_2024"]}`)
+	_, err := c.SetEnvValues(context.Background(), "o", "r", "uat",
+		map[string]string{"API_KEY": "sk-1", "OTHER_KEY": "MYSECRETTOKEN_2024"})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if strings.Contains(err.Error(), "MYSECRETTOKEN_2024") {
+		t.Errorf("a submitted value must not be listed as a saved key: %q", err.Error())
+	}
+	if !strings.Contains(err.Error(), "API_KEY") {
+		t.Errorf("the real saved key should still be listed: %q", err.Error())
+	}
+}
+
+func TestSetEnvValues_OversizedErrorBody_ShowsTheStatusOnly(t *testing.T) {
+	big := `{"error":"conflict","code":"some_code","detail":"` + strings.Repeat("x", 80<<10) + `"}`
+	c := setEnvErrServer(t, http.StatusConflict, big)
+	_, err := c.SetEnvValues(context.Background(), "o", "r", "uat", map[string]string{"K": "V"})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if got, want := err.Error(), "set-env-values failed: 409 Conflict"; got != want {
+		t.Errorf("error = %q, want %q", got, want)
+	}
+}
+
+func TestSetEnvValues_StatusTextIsNotTakenFromTheServer(t *testing.T) {
+	// The reason phrase on the status line is the server's (or a proxy's) text.
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		buf := make([]byte, 4096)
+		_, _ = conn.Read(buf)
+		_, _ = conn.Write([]byte("HTTP/1.1 409 Con\x1b[31mflict sk-live-123456\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}"))
+	}()
+	c := &hub.Client{BaseURL: "http://" + ln.Addr().String(), Credential: "tok"}
+	_, err = c.SetEnvValues(context.Background(), "o", "r", "uat", map[string]string{"API_KEY": "sk-live-123456"})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if got, want := err.Error(), "set-env-values failed: 409 Conflict"; got != want {
+		t.Errorf("error = %q, want %q", got, want)
+	}
+}
+
+func TestSetEnvValues_ErrorTextIsOneBoundedLineWithoutControlCharacters(t *testing.T) {
+	long := strings.Repeat("x", 5000)
+	c := setEnvErrServer(t, http.StatusConflict, `{"error":"conflict","code":"c\u001b[31m","detail":"line one\nline two \u001b[2J`+long+`","updated":["GOOD_KEY","bad key\u001b[0m","ALSO_GOOD"]}`)
+	_, err := c.SetEnvValues(context.Background(), "o", "r", "uat", map[string]string{"K": "V"})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	msg := err.Error()
+	if strings.ContainsAny(msg, "\x1b\n\r") {
+		t.Errorf("error must be one line with no escape characters: %q", msg)
+	}
+	if len(msg) > 1000 {
+		t.Errorf("error should be bounded, got %d bytes", len(msg))
+	}
+	if !strings.Contains(msg, "GOOD_KEY") || !strings.Contains(msg, "ALSO_GOOD") || strings.Contains(msg, "bad key") {
+		t.Errorf("only well-formed key names are listed: %q", msg)
+	}
+}
+
+func TestSetEnvValues_ListsAtMostTwentySavedKeys(t *testing.T) {
+	keys := make([]string, 0, 25)
+	for i := 1; i <= 25; i++ {
+		keys = append(keys, fmt.Sprintf("SAVED_KEY_%02d", i))
+	}
+	raw, _ := json.Marshal(map[string]any{"error": "conflict", "code": "some_code", "updated": keys})
+	c := setEnvErrServer(t, http.StatusConflict, string(raw))
+	_, err := c.SetEnvValues(context.Background(), "o", "r", "uat", map[string]string{"K": "V"})
+	var he *hub.SetEnvValuesError
+	if !errors.As(err, &he) {
+		t.Fatalf("error should be a *hub.SetEnvValuesError, got %T", err)
+	}
+	if len(he.Updated) != 20 || he.Updated[19] != "SAVED_KEY_20" {
+		t.Errorf("want the first 20 keys, got %d: %v", len(he.Updated), he.Updated)
+	}
+	if strings.Contains(err.Error(), "SAVED_KEY_21") {
+		t.Errorf("the 21st key must not be listed: %q", err.Error())
+	}
+}
+
+// ---- the status line of every other refused call ----
+
+// evilStatusClient talks to a raw server whose status line carries an escape
+// sequence and the word "Unauthorized" as its reason phrase. The reason phrase
+// is the server's (or a proxy's) own text, so it must never be printed, and
+// it must not make a 418 look like a sign-in problem.
+func evilStatusClient(t *testing.T) *hub.Client {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				defer conn.Close()
+				buf := make([]byte, 8192)
+				_, _ = conn.Read(buf)
+				_, _ = conn.Write([]byte("HTTP/1.1 418 Unauthorized\x1b]0;pwned\x07\x1b[2J\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}"))
+			}()
+		}
+	}()
+	return &hub.Client{BaseURL: "http://" + ln.Addr().String(), Credential: "tok"}
+}
+
+func TestEveryRefusedCall_PrintsGosStatusTextNeverTheServers(t *testing.T) {
+	ctx := context.Background()
+	calls := map[string]func(c *hub.Client) error{
+		"token exchange failed": func(c *hub.Client) error {
+			_, err := c.ExchangeToken(ctx, "code", "verifier", "http://127.0.0.1/cb")
+			return err
+		},
+		"list-projects failed": func(c *hub.Client) error { _, err := c.ListProjects(ctx); return err },
+		"fetch-env-values failed": func(c *hub.Client) error {
+			_, _, err := c.FetchEnvValues(ctx, "o", "r", "uat", []string{"API_KEY"})
+			return err
+		},
+		"diagnostics post failed": func(c *hub.Client) error { return c.PostDiagnostics(ctx, map[string]string{"a": "b"}) },
+		"ai-bundle meta failed":   func(c *hub.Client) error { _, err := c.AIBundleMeta(ctx); return err },
+		"ai-bundle download failed": func(c *hub.Client) error {
+			_, err := c.AIBundleTarball(ctx, "v1.0.0")
+			return err
+		},
+	}
+	for prefix, call := range calls {
+		t.Run(prefix, func(t *testing.T) {
+			err := call(evilStatusClient(t))
+			if err == nil {
+				t.Fatal("expected an error on 418")
+			}
+			if got, want := err.Error(), prefix+": 418 I'm a teapot"; got != want {
+				t.Errorf("error = %q, want %q", got, want)
+			}
+		})
+	}
+}
+
+// The org, repo and env in the env-values path come from the project marker
+// (a file in the repo) and the command line. Each is one path segment: a
+// value with a slash, a query or a fragment in it must not change the route.
+func TestEnvValuesPath_EachPartStaysOnePathSegment(t *testing.T) {
+	var gotPath, gotQuery string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath, gotQuery = r.URL.EscapedPath(), r.URL.RawQuery
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"env":"uat","values":{},"missing":[],"updated":[]}`))
+	}))
+	defer srv.Close()
+	c := &hub.Client{BaseURL: srv.URL, Credential: "tok"}
+	ctx := context.Background()
+
+	want := "/api/cli/projects/hemfrid%2F..%2F..%2Fadmin/acme%3Fx=1%23f/env/uat%2Fextra/values"
+	_, _, _ = c.FetchEnvValues(ctx, "hemfrid/../../admin", "acme?x=1#f", "uat/extra", []string{"K"})
+	if gotPath != want || gotQuery != "" {
+		t.Errorf("FetchEnvValues: path %q query %q, want path %q and no query", gotPath, gotQuery, want)
+	}
+	_, _ = c.SetEnvValues(ctx, "hemfrid/../../admin", "acme?x=1#f", "uat/extra", map[string]string{"K": "V"})
+	if gotPath != want || gotQuery != "" {
+		t.Errorf("SetEnvValues: path %q query %q, want path %q and no query", gotPath, gotQuery, want)
+	}
+
+	// Ordinary values give the path they always did.
+	_, _, _ = c.FetchEnvValues(ctx, "hemfrid", "acme-web", "uat", []string{"K"})
+	if gotPath != "/api/cli/projects/hemfrid/acme-web/env/uat/values" {
+		t.Errorf("ordinary path changed: %q", gotPath)
 	}
 }
 
