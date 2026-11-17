@@ -255,9 +255,9 @@ func TestHelper_Erase_DifferentHost_Silent(t *testing.T) {
 }
 
 // The credential goes only to the signed-in Hub's own origin: the request's
-// protocol must be the Hub URL's scheme and its host (with any port) the Hub
-// URL's host. A request for the right host over http would send the token in
-// cleartext, so it gets nothing.
+// protocol must be the Hub URL's scheme, and its host and port the Hub URL's
+// host and port (the scheme's default when none is written). A request for the
+// right host over http would send the token in cleartext, so it gets nothing.
 func TestHelper_AnswersOnlyTheHubsOrigin(t *testing.T) {
 	cases := []struct {
 		name, hub string

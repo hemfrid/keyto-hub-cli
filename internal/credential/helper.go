@@ -37,8 +37,9 @@ const (
 //   - creds: the stored Keyto credentials (may be nil if not authenticated).
 //   - hubURL: the signed-in Hub's URL (e.g. "https://hub.keytolabs.com"). The
 //     helper answers only a request for that origin: the same protocol as its
-//     scheme and the same host, with any port. A request for the Hub's host
-//     over http would carry the token in cleartext, so it is not answered.
+//     scheme, the same host and the same port (the scheme's default when none
+//     is written). A request for the Hub's host over http would carry the
+//     token in cleartext, so it is not answered.
 func Helper(
 	op string,
 	in io.Reader,
